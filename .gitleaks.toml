@@ -1,0 +1,15 @@
+# GitLeaks configuration for cloud-init-templates
+# This extends the default ruleset with custom allowlist patterns
+
+title = "gitleaks config"
+
+# Allowlist patterns - these strings will be ignored even if they match rules
+[allowlist]
+description = "Global allowlist"
+regexes = [
+    "YOUR_SEARCH_KEY",  # Documentation placeholder
+    "YOUR_API_KEY",     # Documentation placeholder  
+    "YOUR_TOKEN",       # Documentation placeholder
+    "EXAMPLE_KEY",      # Documentation placeholder
+    "PLACEHOLDER_",     # Generic placeholder prefix
+]

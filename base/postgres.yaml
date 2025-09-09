@@ -1,0 +1,42 @@
+#cloud-config
+# PostgreSQL database server setup - official PostgreSQL repository method
+
+# Follows https://www.postgresql.org/download/linux/ubuntu/ and
+# https://wiki.postgresql.org/wiki/Apt
+
+merge_how:
+  - name: list
+    settings: [append]
+  - name: dict
+    settings: [no_replace, recurse_list]
+
+# Install prerequisites for PostgreSQL installation
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+
+runcmd:
+  # Create directory for PostgreSQL GPG key
+  - install -m 0755 -d /etc/apt/keyrings
+
+  # Add PostgreSQL's official GPG key
+  - curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /etc/apt/keyrings/postgresql.asc
+  - chmod a+r /etc/apt/keyrings/postgresql.asc
+
+  # Add PostgreSQL repository to sources
+  - |
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/postgresql.asc] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/postgresql.list
+
+  # Update package index with new repository
+  - apt-get update
+
+  # Install PostgreSQL (latest stable version)
+  - apt-get install -y postgresql postgresql-contrib
+
+  # Setup PostgreSQL
+  - systemctl start postgresql
+  - systemctl enable postgresql
+
+final_message: "PostgreSQL installed from official repository"

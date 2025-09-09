@@ -1,0 +1,187 @@
+#cloud-config
+# Email alert configuration using AWS SES
+# Enables servers to send critical alerts via AWS SES
+# Requires environment variables: DEVOPS_EMAIL, ALERTS_EMAIL, AWS_REGION
+
+merge_how:
+  - name: list
+    settings: [append]
+  - name: dict
+    settings: [no_replace, recurse_list]
+
+packages:
+  - curl
+  - unzip
+  - mailutils
+
+# Create dedicated user for alerts
+users:
+  - name: alerts
+    system: true
+    shell: /bin/bash
+    homedir: /var/lib/alerts
+
+write_files:
+  # Login notification script
+  - path: /usr/local/bin/notify-login.sh
+    content: |
+      #!/bin/bash
+      # Send login notification
+
+      # Load environment configuration
+      [ -f /etc/environment.d/90-infrastructure.conf ] && . /etc/environment.d/90-infrastructure.conf
+
+      USER="$PAM_USER"
+      SERVICE="$PAM_SERVICE"
+      REMOTE="${PAM_RHOST:-local}"
+
+      if [ "$SERVICE" = "sshd" ] || [ "$SERVICE" = "login" ]; then
+        /usr/local/bin/send-alert.sh "User Login" "User '$USER' logged in via $SERVICE from $REMOTE"
+      fi
+    permissions: "0755"
+    owner: alerts:alerts
+
+  # PAM configuration for login notifications
+  - path: /etc/pam.d/common-session-login-notify
+    content: |
+      # Login notification
+      session optional pam_exec.so setsid=1 /usr/local/bin/notify-login.sh
+    permissions: "0644"
+    owner: root:root
+
+  # SES configuration script
+  - path: /usr/local/bin/send-alert.sh
+    content: |
+      #!/bin/bash
+      # Send email alerts via AWS SES
+
+      # Load environment configuration
+      [ -f /etc/environment.d/90-infrastructure.conf ] && . /etc/environment.d/90-infrastructure.conf
+
+      SUBJECT="$1"
+      BODY="$2"
+      TO_EMAIL="${DEVOPS_EMAIL:-admin@example.com}"
+      FROM_EMAIL="${ALERTS_EMAIL:-alerts@example.com}"
+      REGION="${AWS_REGION:-us-east-1}"
+
+      if [ -z "$SUBJECT" ] || [ -z "$BODY" ]; then
+        echo "Usage: $0 'Subject' 'Body'"
+        exit 1
+      fi
+
+      # Add server info to body
+      HOSTNAME=$(hostname)
+      TIMESTAMP=$(date)
+      FULL_BODY="Server: $HOSTNAME
+      Time: $TIMESTAMP
+
+      $BODY"
+
+      # Send via SES
+      aws ses send-email \
+        --region "$REGION" \
+        --source "$FROM_EMAIL" \
+        --destination "ToAddresses=$TO_EMAIL" \
+        --message "Subject={Data='[ALERT] $SUBJECT',Charset=utf-8},Body={Text={Data='$FULL_BODY',Charset=utf-8}}" \
+        2>/tmp/ses-error.log
+
+      if [ $? -eq 0 ]; then
+        echo "Alert sent successfully"
+      else
+        echo "Failed to send alert. Check /tmp/ses-error.log"
+        # Fallback to local logging
+        echo "$TIMESTAMP - FAILED TO SEND: $SUBJECT - $BODY" >> /var/log/alerts/failed-alerts.log
+      fi
+    permissions: "0755"
+    owner: alerts:alerts
+
+  # Critical system alert script - FIRE ONLY alerts
+  - path: /usr/local/bin/check-critical.sh
+    content: |
+      #!/bin/bash
+      # Only alert for server-on-fire situations
+
+      # Check disk space (alert if >95% AND growing)
+      df -h | awk 'NR>1 {gsub("%","",$5); if($5>95) print $6 " is " $5 "% full"}' | while read alert; do
+        if [ -n "$alert" ]; then
+          # Only alert if disk is actually filling up (check twice, 5 min apart)
+          PARTITION=$(echo "$alert" | awk '{print $1}')
+          CURRENT=$(df -h "$PARTITION" | awk 'NR==2 {gsub("%","",$5); print $5}')
+          sleep 300  # Wait 5 minutes
+          NEW=$(df -h "$PARTITION" | awk 'NR==2 {gsub("%","",$5); print $5}')
+          if [ "$NEW" -gt "$CURRENT" ]; then
+            /usr/local/bin/send-alert.sh "DISK FULL IMMINENT" "$PARTITION is $NEW% and growing"
+          fi
+        fi
+      done
+
+      # Check if system is completely unresponsive (load > 10x CPU cores)
+      CPU_CORES=$(nproc)
+      LOAD_THRESHOLD=$((CPU_CORES * 10))
+      LOAD_15MIN=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $3}' | sed 's/,//' | cut -d. -f1)
+      if [ "$LOAD_15MIN" -gt "$LOAD_THRESHOLD" ]; then
+        /usr/local/bin/send-alert.sh "SYSTEM UNRESPONSIVE" "Load: $LOAD_15MIN (CPUs: $CPU_CORES)"
+      fi
+
+      # Check if root filesystem is full (service-killing)
+      ROOT_USAGE=$(df / | awk 'NR==2 {gsub("%","",$5); print $5}')
+      if [ "$ROOT_USAGE" -gt 98 ]; then
+        /usr/local/bin/send-alert.sh "ROOT FILESYSTEM FULL" "Root partition: ${ROOT_USAGE}% - services may fail"
+      fi
+
+      # Check for failed critical services
+      CRITICAL_SERVICES="nginx ssh docker postgresql listmonk fail2ban ufw"
+      for service in $CRITICAL_SERVICES; do
+        if systemctl is-enabled "$service" >/dev/null 2>&1; then
+          if systemctl is-failed "$service" >/dev/null 2>&1; then
+            STATUS=$(systemctl status "$service" --no-pager -l | head -10)
+            /usr/local/bin/send-alert.sh "SERVICE FAILED: $service" "Service $service has failed:\n\n$STATUS"
+          fi
+        fi
+      done
+    permissions: "0755"
+    owner: alerts:alerts
+
+  # AWS configuration for alerts user
+  - path: /var/lib/alerts/.aws/config
+    content: |
+      [default]
+      region = us-east-1
+      output = json
+    permissions: "0600"
+    owner: alerts:alerts
+
+  # AWS credentials template (substitute environment variables during deployment)
+  - path: /var/lib/alerts/.aws/credentials
+    content: |
+      [default]
+      aws_access_key_id = CHANGE_ME
+      aws_secret_access_key = CHANGE_ME
+    permissions: "0600"
+    owner: alerts:alerts
+
+runcmd:
+  # Install AWS CLI v2 (official method)
+  # See: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
+  - cd /tmp
+  - curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+  - unzip -q awscliv2.zip
+  - ./aws/install
+  - rm -rf awscliv2.zip aws/
+
+  # Create alerts log directory
+  - mkdir -p /var/log/alerts
+  - chown alerts:alerts /var/log/alerts
+
+  # Schedule critical checks every hour (fires are rare)
+  - echo "0 * * * * alerts /usr/local/bin/check-critical.sh" >> /etc/crontab
+
+  # Enable login notifications by adding to SSH and login PAM configs
+  - echo "session optional pam_exec.so setsid=1 /usr/local/bin/notify-login.sh" >> /etc/pam.d/sshd
+  - echo "session optional pam_exec.so setsid=1 /usr/local/bin/notify-login.sh" >> /etc/pam.d/login
+
+  # Boot notification
+  - sleep 60 && sudo -u alerts /usr/local/bin/send-alert.sh "Server Boot" "$(hostname) has completed startup and monitoring
+    is active"
+
+final_message: "Email alerting configured. Edit /var/lib/alerts/.aws/credentials before deployment."

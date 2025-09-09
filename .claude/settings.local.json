@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:cloudinit.readthedocs.io)",
+      "Bash(docker build:*)",
+      "Bash(make test:*)",
+      "Bash(python3:*)",
+      "Bash(gh api:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(make fmt:*)",
+      "Bash(chmod:*)",
+      "WebFetch(domain:github.com)",
+      "Read(//etc/fail2ban/**)",
+      "Bash(./tests/test-hardening.sh:*)",
+      "Bash(sed:*)",
+      "Bash(echo \"Exit code: $?\")",
+      "Bash(./tests/run-all-tests.sh:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

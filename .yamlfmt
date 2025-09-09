@@ -1,0 +1,6 @@
+formatter:
+  type: basic
+  retain_line_breaks: true
+  disallow_anchors: false
+  max_line_length: 120
+  pad_line_comments: 2

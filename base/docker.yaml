@@ -1,0 +1,50 @@
+#cloud-config
+# Docker installation - official Ubuntu repository method
+# Follows https://docs.docker.com/engine/install/ubuntu/
+
+merge_how:
+  - name: list
+    settings: [append]
+  - name: dict
+    settings: [no_replace, recurse_list]
+
+# Install prerequisites for Docker installation
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+
+runcmd:
+  # Remove any existing Docker packages to avoid conflicts
+  - apt-get remove -y docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc 2>/dev/null || true
+
+  # Create directory for Docker GPG key
+  - install -m 0755 -d /etc/apt/keyrings
+
+  # Add Docker's official GPG key
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+
+  # Add Docker repository to sources
+  - |
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+  # Update package index with new repository
+  - apt-get update
+
+  # Install Docker Engine and related packages
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  # Add deploy user to docker group (allows running docker without sudo)
+  - usermod -aG docker deploy
+
+  # Enable and start Docker service
+  - systemctl enable docker
+  - systemctl start docker
+
+  # Verify installation
+  - docker --version
+  - docker compose version
+
+final_message: "Docker installation complete. User 'deploy' added to docker group. Logout/login required for group changes."

@@ -1,0 +1,88 @@
+#cloud-config
+# Example: Web Application Server
+# Combines hardening + Docker for a secure containerized web application
+
+# Environment variables for base templates (must be before #include)
+write_files:
+  - path: /etc/environment.d/90-infrastructure.conf
+    content: |
+      # Email Configuration
+      DEVOPS_EMAIL="devops@yourcompany.com"
+      ALERTS_EMAIL="alerts@yourcompany.com"
+      AWS_REGION="us-west-2"
+    permissions: '0644'
+    owner: root:root
+
+#include
+https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/hardening.yaml
+https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/docker.yaml
+https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/email-alerts.yaml
+
+# Application-specific configuration
+write_files:
+  - path: /opt/webapp/docker-compose.yml
+    content: |
+      version: '3.8'
+      services:
+        web:
+          image: nginx:alpine
+          ports:
+            - "80:80"
+            - "443:443"
+          volumes:
+            - /opt/webapp/nginx.conf:/etc/nginx/nginx.conf:ro
+            - /opt/webapp/ssl:/etc/nginx/ssl:ro
+          restart: always
+    permissions: '0644'
+    owner: root:root
+
+  - path: /opt/webapp/nginx.conf
+    content: |
+      events {
+          worker_connections 1024;
+      }
+
+      http {
+          server {
+              listen 80;
+              listen 443 ssl;
+
+              ssl_certificate /etc/nginx/ssl/cert.pem;
+              ssl_certificate_key /etc/nginx/ssl/key.pem;
+
+              location / {
+                  root /usr/share/nginx/html;
+                  index index.html;
+              }
+          }
+      }
+    permissions: '0644'
+    owner: root:root
+
+packages:
+  - curl
+
+runcmd:
+  # Create application directory
+  - mkdir -p /opt/webapp/ssl
+
+  # Start the application
+  - cd /opt/webapp && docker-compose up -d
+
+  # Configure firewall for web traffic
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+
+final_message: |
+  🌐 Web server deployment complete!
+
+  Services:
+  • Nginx running in Docker container
+  • Ports 80 and 443 open
+  • Security hardening applied
+  • Email alerts configured
+
+  Next steps:
+  1. Upload SSL certificates to /opt/webapp/ssl/
+  2. Deploy your application content
+  3. Configure DNS to point to this server

@@ -1,0 +1,289 @@
+#cloud-config
+# System hardening
+
+merge_how:
+  - name: list
+    settings: [append]
+  - name: dict
+    settings: [no_replace, recurse_list]
+
+# System updates and package management
+package_update: true
+package_upgrade: true
+packages:
+  - unattended-upgrades
+  - lynis
+  - fail2ban
+  - ufw
+  - apt-transport-https
+  - ca-certificates
+  - apparmor-profiles
+  - logrotate
+  - auditd
+  - psmisc
+
+# Create deploy user with sudo access
+users:
+  - name: deploy
+    gecos: "System Administrator"
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: "ALL=(ALL:ALL) ALL"
+    # SSH keys moved from root during setup
+
+# SSH hardening configuration
+ssh:
+  emit_keys_to_console: false
+
+# Disable root password login
+chpasswd:
+  expire: false
+
+write_files:
+  # SSH hardening configuration
+  - path: /etc/ssh/sshd_config.d/99-hardening.conf
+    content: |
+      # Protocol settings
+      Protocol 2
+
+      # Host key configuration
+      HostKey /etc/ssh/ssh_host_ed25519_key
+      HostKey /etc/ssh/ssh_host_rsa_key
+      RequiredRSASize 3072
+
+      # Cryptographic settings
+      RekeyLimit default 1h
+      KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
+      Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes256-ctr
+      MACs hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com
+
+      # Logging
+      SyslogFacility AUTH
+      LogLevel VERBOSE
+
+      # Authentication settings
+      LoginGraceTime 30s
+      PermitRootLogin no
+      StrictModes yes
+      MaxAuthTries 3
+      MaxSessions 5
+      PubkeyAuthentication yes
+      AuthenticationMethods publickey
+
+      # Password authentication (all disabled)
+      PasswordAuthentication no
+      PermitEmptyPasswords no
+      KbdInteractiveAuthentication no
+      ChallengeResponseAuthentication no
+
+      # Other authentication methods (disabled)
+      HostbasedAuthentication no
+      KerberosAuthentication no
+      GSSAPIAuthentication no
+
+      # PAM integration
+      UsePAM yes
+
+      # Forwarding options (all disabled for security)
+      AllowAgentForwarding no
+      AllowTcpForwarding no
+      X11Forwarding no
+
+      # Connection settings
+      PrintMotd no
+      TCPKeepAlive yes
+      ClientAliveInterval 300
+      ClientAliveCountMax 2
+      UseDNS no
+      MaxStartups 3:50:10
+
+      # User access control
+      AllowUsers deploy
+    permissions: "0644"
+    owner: root:root
+
+  # SSH port configuration (sourced from environment)
+  - path: /usr/local/bin/configure-ssh-port.sh
+    content: |
+      #!/bin/bash
+      # Configure SSH port from environment variables
+
+      # Load environment configuration
+      [ -f /etc/environment.d/90-infrastructure.conf ] && . /etc/environment.d/90-infrastructure.conf
+
+      # Use environment SSH_PORT or default to 22
+      SSH_PORT="${SSH_PORT:-22}"
+
+      # Only change port if it's not 22 (default)
+      if [ "$SSH_PORT" != "22" ]; then
+          echo "Configuring SSH on port $SSH_PORT"
+
+          # Configure systemd socket activation (Ubuntu 22.10+)
+          mkdir -p /etc/systemd/system/ssh.socket.d
+          echo "[Socket]" > /etc/systemd/system/ssh.socket.d/override.conf
+          echo "# Clear default listeners (IPv4 and IPv6 on port 22)" >> /etc/systemd/system/ssh.socket.d/override.conf
+          echo "ListenStream=" >> /etc/systemd/system/ssh.socket.d/override.conf
+          echo "# Add new listeners on custom port" >> /etc/systemd/system/ssh.socket.d/override.conf
+          echo "ListenStream=0.0.0.0:\$SSH_PORT" >> /etc/systemd/system/ssh.socket.d/override.conf
+          echo "ListenStream=[::]:\$SSH_PORT" >> /etc/systemd/system/ssh.socket.d/override.conf
+
+          # Also set in sshd_config for compatibility
+          echo "Port $SSH_PORT" > /etc/ssh/sshd_config.d/99-custom-port.conf
+
+          # Update UFW to allow new port
+          ufw allow "$SSH_PORT"/tcp comment 'SSH custom port'
+
+          # Remove default SSH rule if we're using custom port
+          ufw delete allow 22/tcp 2>/dev/null || true
+
+          # Configure fail2ban for custom SSH port
+          mkdir -p /etc/fail2ban/jail.d
+          echo "[sshd]" > /etc/fail2ban/jail.d/sshd-custom-port.conf
+          echo "enabled = true" >> /etc/fail2ban/jail.d/sshd-custom-port.conf
+          echo "port = $SSH_PORT" >> /etc/fail2ban/jail.d/sshd-custom-port.conf
+
+          # Reload systemd and restart SSH socket (ignore failures for compatibility)
+          systemctl daemon-reload || true
+          systemctl restart ssh.socket || true
+          systemctl reload ssh.service || true
+
+          echo "SSH configured on port $SSH_PORT"
+      else
+          echo "Using default SSH port 22"
+      fi
+    permissions: "0755"
+    owner: root:root
+
+  # Basic kernel hardening
+  - path: /etc/sysctl.d/99-security-hardening.conf
+    content: |
+      # Network security
+      net.ipv4.ip_forward = 0
+      net.ipv4.conf.all.accept_redirects = 0
+      net.ipv4.conf.default.accept_redirects = 0
+      net.ipv4.conf.all.accept_source_route = 0
+      net.ipv4.conf.default.accept_source_route = 0
+      net.ipv4.tcp_syncookies = 1
+      net.ipv4.icmp_echo_ignore_broadcasts = 1
+      net.ipv4.icmp_ignore_bogus_error_responses = 1
+      net.ipv4.conf.all.log_martians = 1
+      net.ipv4.conf.default.log_martians = 1
+
+      # Kernel security
+      kernel.dmesg_restrict = 1
+      kernel.kptr_restrict = 1
+      kernel.randomize_va_space = 2
+
+      # File system hardening
+      fs.suid_dumpable = 0
+      fs.protected_hardlinks = 1
+      fs.protected_symlinks = 1
+    permissions: "0644"
+    owner: root:root
+
+  # Unattended upgrades configuration
+  - path: /etc/apt/apt.conf.d/50unattended-upgrades
+    content: |
+      Unattended-Upgrade::Allowed-Origins {
+          "${distro_id}:${distro_codename}";
+          "${distro_id}:${distro_codename}-security";
+          "${distro_id}ESMApps:${distro_codename}-apps-security";
+          "${distro_id}ESM:${distro_codename}-infra-security";
+      };
+      Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+      Unattended-Upgrade::Remove-New-Unused-Dependencies "true";
+      Unattended-Upgrade::Automatic-Reboot "true";
+      Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
+      Unattended-Upgrade::Automatic-Reboot-Time "02:00";
+    permissions: "0644"
+    owner: root:root
+
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+    permissions: "0644"
+    owner: root:root
+
+
+# System hardening commands
+runcmd:
+  # Generate random password for deploy user and save to file. 28 hex characters is 112 bits "which is enough entropy for anyone" -billg
+  - |
+    DEPLOY_PASSWORD=$(openssl rand -hex 28)
+    echo "deploy:$DEPLOY_PASSWORD" | chpasswd
+    echo "$DEPLOY_PASSWORD" > /home/deploy/.initial_password
+    chown deploy:deploy /home/deploy/.initial_password
+    chmod 600 /home/deploy/.initial_password
+
+  # Move SSH keys from root to deploy user (cloud provider pre-installs them)
+  - mkdir -p /home/deploy/.ssh
+  - |
+    mv /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys || { echo "ERROR: No root SSH keys found"; exit 1; }
+  - chown -R deploy:deploy /home/deploy/.ssh
+  - chmod 700 /home/deploy/.ssh
+  - chmod 600 /home/deploy/.ssh/authorized_keys
+
+  # Disable unnecessary MOTD components
+  - chmod -x /etc/update-motd.d/10-help-text 2>/dev/null || true
+  - chmod -x /etc/update-motd.d/50-motd-news 2>/dev/null || true
+  - chmod -x /etc/update-motd.d/91-contract-ua-esm-status 2>/dev/null || true
+
+  # Apply kernel security settings
+  - sysctl -p /etc/sysctl.d/99-security-hardening.conf
+
+  # Configure SSH port from environment (after UFW is ready)
+  - /usr/local/bin/configure-ssh-port.sh
+
+  # Basic file permissions hardening
+  - chmod 700 /root
+  - chmod 600 /etc/ssh/sshd_config
+  - chmod +t /tmp /var/tmp
+
+  # Secure shared memory
+  - echo "tmpfs /run/shm tmpfs defaults,noexec,nosuid 0 0" >> /etc/fstab
+
+  # Remove weak SSH host keys and regenerate strong ones
+  - rm -f /etc/ssh/ssh_host_dsa_key /etc/ssh/ssh_host_dsa_key.pub
+  - rm -f /etc/ssh/ssh_host_ecdsa_key /etc/ssh/ssh_host_ecdsa_key.pub
+
+  # Ensure 4096-bit RSA key
+  - |
+    if [ -f /etc/ssh/ssh_host_rsa_key ]; then
+      key_size=$(ssh-keygen -lf /etc/ssh/ssh_host_rsa_key | awk '{print $1}')
+      if [ "$key_size" -lt 4096 ]; then
+        rm -f /etc/ssh/ssh_host_rsa_key /etc/ssh/ssh_host_rsa_key.pub
+        ssh-keygen -t rsa -b 4096 -f /etc/ssh/ssh_host_rsa_key -N "" -C "$(hostname)-$(date +%Y-%m-%d)"
+      fi
+    fi
+
+  # Ensure Ed25519 host key exists
+  - |
+    if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
+      ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N "" -C "$(hostname)-$(date +%Y-%m-%d)"
+    fi
+
+  # Configure firewall (allow common web ports)
+  - ufw --force reset
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 22/tcp comment 'SSH'
+  - ufw allow 80/tcp comment 'HTTP'
+  - ufw allow 443/tcp comment 'HTTPS'
+  - ufw --force enable
+
+  # Test SSH configuration before restart
+  - sshd -t
+
+  # Enable and start services
+  - systemctl restart sshd
+  - systemctl enable unattended-upgrades fail2ban auditd
+  - systemctl start unattended-upgrades fail2ban auditd
+
+power_state:
+  mode: reboot
+  message: "Rebooting after hardening setup"
+  timeout: 60
+  condition: True
+
+final_message: "Base hardening complete. SSH on port 22 (or custom port if configured). System ready after $UPTIME seconds."

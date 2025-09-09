@@ -1,0 +1,25 @@
+#cloud-config
+# Node.js runtime setup
+# Installs Node.js from official NodeSource repository
+
+merge_how:
+  - name: list
+    settings: [append]
+  - name: dict
+    settings: [no_replace, recurse_list]
+
+packages:
+  - curl
+  - gnupg
+
+runcmd:
+  # Install Node.js from official repository
+  # See: https://github.com/nodesource/distributions#installation-instructions
+  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  - apt-get install -y nodejs
+
+  # Verify installation
+  - node --version
+  - npm --version
+
+final_message: "Node.js installed successfully"
