@@ -14,8 +14,6 @@ from pathlib import Path
 
 def format_yaml_file(file_path: Path) -> None:
     """Format a single YAML file, handling cloud-init #include directives."""
-    print(f"Formatting {file_path}...")
-
     content = file_path.read_text()
     lines = content.splitlines()
 
