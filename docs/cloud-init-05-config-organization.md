@@ -6,17 +6,40 @@ As you scale deployments, you'll want to share common configuration (hardening, 
 
 **Key concept**: Don't repeat yourself - create reusable, composable configuration components that can be mixed and matched for different deployment flavors.
 
-## Include Files (Primary DRY Mechanism)
+## Cloud Config Archives (Primary DRY Mechanism)
 
-**Best approach for sharing configs across deployments**
+**Best approach for sharing configs across deployments with proper ordering**
 
 ### Basic Pattern
 
 ```yaml
-#include
-https://configs.company.com/base-hardening.yaml
-https://configs.company.com/monitoring-alerts.yaml
-https://configs.company.com/web-server-specific.yaml
+#cloud-config-archive
+
+# Environment setup (runs first)
+- type: text/cloud-config
+  content: |
+    write_files:
+      - path: /etc/environment.d/90-infrastructure.conf
+        content: |
+          ENV=production
+          REGION=us-west-2
+        permissions: '0644'
+        owner: root:root
+
+# Include base configurations
+- type: text/x-include-url
+  content: |
+    https://configs.company.com/base-hardening.yaml
+    https://configs.company.com/monitoring-alerts.yaml
+    https://configs.company.com/web-server-specific.yaml
+
+# Service-specific overrides
+- type: text/cloud-config
+  content: |
+    packages:
+      - nginx
+    runcmd:
+      - systemctl enable nginx
 ```
 
 ### Organization Structure
@@ -38,29 +61,62 @@ https://configs.company.com/
     └── worker.yaml           # Background job processing
 ```
 
-### Environment-Specific Includes
+### Environment-Specific Cloud Config Archives
 
 ```yaml
 # Production web server user-data
-#include
-https://configs.company.com/base/hardening.yaml
-https://configs.company.com/base/monitoring.yaml
-https://configs.company.com/environments/production.yaml
-https://configs.company.com/services/web-server.yaml
+#cloud-config-archive
+
+# Environment variables (first)
+- type: text/cloud-config
+  content: |
+    write_files:
+      - path: /etc/environment.d/90-infrastructure.conf
+        content: |
+          ENVIRONMENT=production
+          REGION=us-east-1
+        permissions: '0644'
+        owner: root:root
+
+# Base configurations
+- type: text/x-include-url
+  content: |
+    https://configs.company.com/base/hardening.yaml
+    https://configs.company.com/base/monitoring.yaml
+    https://configs.company.com/environments/production.yaml
+    https://configs.company.com/services/web-server.yaml
 
 # Development database user-data
-#include
-https://configs.company.com/base/monitoring.yaml
-https://configs.company.com/environments/development.yaml
-https://configs.company.com/services/database.yaml
+#cloud-config-archive
+
+# Environment variables (first)
+- type: text/cloud-config
+  content: |
+    write_files:
+      - path: /etc/environment.d/90-infrastructure.conf
+        content: |
+          ENVIRONMENT=development
+          REGION=us-west-2
+        permissions: '0644'
+        owner: root:root
+
+# Base configurations
+- type: text/x-include-url
+  content: |
+    https://configs.company.com/base/monitoring.yaml
+    https://configs.company.com/environments/development.yaml
+    https://configs.company.com/services/database.yaml
 ```
 
 ### Authentication for Private Configs
 
 ```yaml
-#include
-https://deploy-token:secret@private-configs.company.com/hardening.yaml
-https://user:pass@internal.company.com/monitoring-prod.yaml
+#cloud-config-archive
+
+- type: text/x-include-url
+  content: |
+    https://deploy-token:secret@private-configs.company.com/hardening.yaml
+    https://user:pass@internal.company.com/monitoring-prod.yaml
 ```
 
 ## MIME Multi-part Archives
@@ -433,8 +489,23 @@ locals {
 
 data "template_file" "web_user_data" {
   template = <<-EOF
-  #include
-  ${join("\n", local.web_configs)}
+  #cloud-config-archive
+
+  # Environment setup
+  - type: text/cloud-config
+    content: |
+      write_files:
+        - path: /etc/environment.d/90-infrastructure.conf
+          content: |
+            ENVIRONMENT=${var.environment}
+            REGION=${var.region}
+          permissions: '0644'
+          owner: root:root
+
+  # Include base configurations
+  - type: text/x-include-url
+    content: |
+      ${join("\n      ", local.web_configs)}
   EOF
 }
 
@@ -447,24 +518,36 @@ resource "aws_instance" "web" {
 ### Pattern 2: Config Management Integration
 
 ```yaml
-#cloud-config
+#cloud-config-archive
+
+# Environment setup
+- type: text/cloud-config
+  content: |
+    write_files:
+      - path: /etc/environment.d/90-infrastructure.conf
+        content: |
+          ENVIRONMENT=production
+        permissions: '0644'
+        owner: root:root
 
 # Bootstrap configuration management
-packages: [ansible]
+- type: text/cloud-config
+  content: |
+    packages: [ansible]
 
-runcmd:
-  # Apply base configuration via Ansible
-  - ansible-pull -U https://github.com/company/infrastructure.git \
-    -i localhost, \
-    --tags "hardening,monitoring" \
-    site.yml
+    runcmd:
+      # Apply base configuration via Ansible
+      - ansible-pull -U https://github.com/company/infrastructure.git \
+        -i localhost, \
+        --tags "hardening,monitoring" \
+        site.yml
 
-  # Apply service-specific configuration
-  - ansible-pull -U https://github.com/company/infrastructure.git \
-    -i localhost, \
-    --tags "web-server" \
-    --extra-vars "environment=production" \
-    site.yml
+      # Apply service-specific configuration
+      - ansible-pull -U https://github.com/company/infrastructure.git \
+        -i localhost, \
+        --tags "web-server" \
+        --extra-vars "environment=production" \
+        site.yml
 ```
 
 ---
