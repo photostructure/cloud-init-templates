@@ -11,22 +11,30 @@ These templates follow a **composable pattern**:
 
 ```yaml
 # your-private-repo/servers/web-server.yaml
-#cloud-config
+#cloud-config-archive
 
-# Environment variables (must be before #include)
-write_files:
-  - path: /etc/environment.d/90-infrastructure.conf
-    content: |
-      ADMIN_EMAIL="admin@yourcompany.com"
-      AWS_REGION="us-west-2"
-    permissions: '0644'
-    owner: root:root
+# Environment setup (runs first)
+- type: text/cloud-config
+  content: |
+    write_files:
+      - path: /etc/environment.d/90-infrastructure.conf
+        content: |
+          ADMIN_EMAIL="admin@yourcompany.com"
+          AWS_REGION="us-west-2"
+        permissions: '0644'
+        owner: root:root
 
-#include
-https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/hardening.yaml
-https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/docker.yaml
+# Include base templates
+- type: text/x-include-url
+  content: |
+    #include
+    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/hardening.yaml
+    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/docker.yaml
 
-# Your application-specific configuration...
+# Your application-specific configuration
+- type: text/cloud-config
+  content: |
+    # Your app config here...
 ```
 
 ## 📦 Available Base Templates
@@ -44,7 +52,7 @@ Some templates come in multiple variants to support different use cases:
 - **Features**: UFW firewall, fail2ban, automatic security updates, SSH hardening
 - **Environment Variables**: None required
 - **Use Case**: Apply to all production servers
-- **WARNING**: This configuration **reboots the server at 2AM UTC time** if there are updates that required a reboot. **You may not want this**.
+- ⚠️ **CAUTION**: This configuration **reboots the server at 2AM UTC time** if there are updates that required a reboot. **You may not want this**.
 
 ### `base/docker.yaml`
 
@@ -52,6 +60,7 @@ Some templates come in multiple variants to support different use cases:
 - **Features**: Latest Docker CE, docker-compose, systemd integration
 - **Environment Variables**: None required
 - **Use Case**: Container-based applications
+- ⚠️ **CAUTION**: You should look into more secure docker-like replacements, like [podman](https://podman.io/).
 
 ### `base/email-alerts.yaml`
 
@@ -78,57 +87,67 @@ Some templates come in multiple variants to support different use cases:
 
 Templates use environment variables loaded from `/etc/environment.d/90-infrastructure.conf` for customization without hardcoded values.
 
-### ⚠️ Important: Ordering Requirements
+### ⚠️ Important: Using Cloud-Config-Archive
 
-**Environment files must be created BEFORE #include directives** to ensure included templates can access the variables during execution.
+**You cannot mix `#include` with `#cloud-config` in the same user-data.** Instead, use `#cloud-config-archive` to combine multiple formats.
 
-**Correct order:**
+**Correct approach with cloud-config-archive:**
 
 ```yaml
-#cloud-config
+#cloud-config-archive
 
 # 1. Create environment files first
-write_files:
-  - path: /etc/environment.d/90-infrastructure.conf
-    content: |
-      DEVOPS_EMAIL="ops@example.com"
+- type: text/cloud-config
+  content: |
+    write_files:
+      - path: /etc/environment.d/90-infrastructure.conf
+        content: |
+          DEVOPS_EMAIL="ops@example.com"
+        permissions: '0644'
+        owner: root:root
 
-# 2. Then include templates that use those variables
-#include
-https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/email-alerts.yaml
+# 2. Include base templates
+- type: text/x-include-url
+  content: |
+    #include
+    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/email-alerts.yaml
 
-# 3. Configure merge behavior (if needed)
-merge_how:
-  - name: list
-    settings: [append]
-  - name: dict
-    settings: [no_replace, recurse_list]
-
-# 4. Additional application-specific configuration
-packages: [...]
+# 3. Additional configuration
+- type: text/cloud-config
+  content: |
+    merge_how:
+      - name: list
+        settings: [append]
+      - name: dict
+        settings: [no_replace, recurse_list]
+    packages: [...]
 ```
 
-**Why this matters:** Cloud-init processes #include files during the parsing phase, merging all configurations before individual modules execute. The write_files module runs early in the 'init' stage, so files created after #include may not be available to included templates.
+**Why this approach works:** Cloud-config-archive processes each section in order, ensuring environment files are created before included templates run.
 
 ### Setting Environment Variables
 
 Create the environment file in your server configuration:
 
 ```yaml
-# In your private server configs
-write_files:
-  - path: /etc/environment.d/90-infrastructure.conf
-    content: |
-      # Email Configuration
-      DEVOPS_EMAIL="devops@yourcompany.com"
-      ALERTS_EMAIL="alerts@yourcompany.com"
-      ADMIN_EMAIL="admin@yourcompany.com"
+# In your private server configs (using cloud-config-archive)
+#cloud-config-archive
 
-      # Infrastructure
-      AWS_REGION="us-west-2"
-      BACKUP_RETENTION_DAYS="14"
-    permissions: "0644"
-    owner: root:root
+- type: text/cloud-config
+  content: |
+    write_files:
+      - path: /etc/environment.d/90-infrastructure.conf
+        content: |
+          # Email Configuration
+          DEVOPS_EMAIL="devops@yourcompany.com"
+          ALERTS_EMAIL="alerts@yourcompany.com"
+          ADMIN_EMAIL="admin@yourcompany.com"
+
+          # Infrastructure
+          AWS_REGION="us-west-2"
+          BACKUP_RETENTION_DAYS="14"
+        permissions: "0644"
+        owner: root:root
 ```
 
 ### Environment Variables
@@ -150,29 +169,35 @@ gh repo fork your-org/cloud-init-templates
 
 ```yaml
 # servers/web-server.yaml
-#cloud-config
+#cloud-config-archive
 
-# Environment variables for templates (must be before #include)
-write_files:
-  - path: /etc/environment.d/90-infrastructure.conf
-    content: |
-      DEVOPS_EMAIL="ops@yourcompany.com"
-      ALERTS_EMAIL="alerts@yourcompany.com"
-      AWS_REGION="us-west-2"
-    permissions: '0644'
-    owner: root:root
+# Environment setup (runs first)
+- type: text/cloud-config
+  content: |
+    write_files:
+      - path: /etc/environment.d/90-infrastructure.conf
+        content: |
+          DEVOPS_EMAIL="ops@yourcompany.com"
+          ALERTS_EMAIL="alerts@yourcompany.com"
+          AWS_REGION="us-west-2"
+        permissions: '0644'
+        owner: root:root
 
-#include
-https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/hardening.yaml
-https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/docker.yaml
+# Include base templates
+- type: text/x-include-url
+  content: |
+    #include
+    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/hardening.yaml
+    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/docker.yaml
 
 # Your application-specific config
-packages:
-  - nginx
-
-runcmd:
-  - systemctl enable nginx
-  - systemctl start nginx
+- type: text/cloud-config
+  content: |
+    packages:
+      - nginx
+    runcmd:
+      - systemctl enable nginx
+      - systemctl start nginx
 ```
 
 ### 3. Deploy with cloud provider
@@ -206,20 +231,20 @@ cloud-init-templates/
 ├── README.md                   # This file
 ├── ENVIRONMENT_VARIABLES.md    # Environment variable reference
 ├── base/                       # Base templates
-│   ├── hardening.yaml          # Security hardening
 │   ├── docker.yaml             # Docker installation
 │   ├── email-alerts.yaml       # AWS SES alerting
+│   ├── hardening.yaml          # Security hardening
 │   ├── nodejs-22.yaml          # Node.js 22.x runtime
 │   ├── nodejs-24.yaml          # Node.js 24.x runtime
 │   └── postgres.yaml           # PostgreSQL from official repo
 ├── examples/                   # Example server configs
-│   ├── web-server.yaml         # Web application server
-│   └── search-server.yaml      # Search server with Meilisearch
+│   ├── search-server.yaml      # Search server with Meilisearch
+│   └── web-server.yaml         # Web application server
 └── tests/                      # Validation test suite
     ├── README.md               # Testing documentation
     ├── run-all-tests.sh        # Comprehensive test runner
-    ├── test-hardening.sh       # Security hardening tests
     ├── test-email-alerts.sh    # Email alerting tests
+    ├── test-hardening.sh       # Security hardening tests
     ├── test-security.sh        # General security tests
     └── utils.sh                # Shared testing utilities
 ```
@@ -251,28 +276,6 @@ cloud-init-templates/
 ## 📚 Examples
 
 See the `examples/` directory for complete server configuration examples showing how to combine multiple base templates.
-
-## 🧪 Testing
-
-Validate your templates and deployments with the included test suite:
-
-```bash
-# Run all tests
-./tests/run-all-tests.sh
-
-# Run specific tests
-./tests/test-hardening.sh      # Security hardening
-./tests/test-email-alerts.sh   # Email alerting
-./tests/test-security.sh       # General security tests
-```
-
-**Use cases:**
-
-- **Pre-deployment**: Validate templates before deploying
-- **Post-deployment**: Verify server configuration after cloud-init
-- **CI/CD**: Include in deployment pipelines for automated validation
-
-See [`tests/README.md`](tests/README.md) for detailed testing documentation.
 
 ## 🆘 Support
 

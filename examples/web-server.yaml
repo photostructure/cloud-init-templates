@@ -1,88 +1,102 @@
-#cloud-config
-# Example: Web Application Server
-# Combines hardening + Docker for a secure containerized web application
+#cloud-config-archive
 
-# Environment variables for base templates (must be before #include)
-write_files:
-  - path: /etc/environment.d/90-infrastructure.conf
-    content: |
-      # Email Configuration
-      DEVOPS_EMAIL="devops@yourcompany.com"
-      ALERTS_EMAIL="alerts@yourcompany.com"
-      AWS_REGION="us-west-2"
-    permissions: '0644'
-    owner: root:root
-
-#include
-https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/hardening.yaml
-https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/docker.yaml
-https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/email-alerts.yaml
-
-# Application-specific configuration
-write_files:
-  - path: /opt/webapp/docker-compose.yml
-    content: |
-      version: '3.8'
-      services:
-        web:
-          image: nginx:alpine
-          ports:
-            - "80:80"
-            - "443:443"
-          volumes:
-            - /opt/webapp/nginx.conf:/etc/nginx/nginx.conf:ro
-            - /opt/webapp/ssl:/etc/nginx/ssl:ro
-          restart: always
-    permissions: '0644'
-    owner: root:root
-
-  - path: /opt/webapp/nginx.conf
-    content: |
-      events {
-          worker_connections 1024;
-      }
-
-      http {
-          server {
-              listen 80;
-              listen 443 ssl;
-
-              ssl_certificate /etc/nginx/ssl/cert.pem;
-              ssl_certificate_key /etc/nginx/ssl/key.pem;
-
-              location / {
-                  root /usr/share/nginx/html;
-                  index index.html;
-              }
+- type: text/cloud-config
+  content: |
+    write_files:
+      - path: /etc/environment.d/90-infrastructure.conf
+        content: |
+          # Email Configuration
+          DEVOPS_EMAIL="devops@yourcompany.com"
+          ALERTS_EMAIL="alerts@yourcompany.com"
+          AWS_REGION="us-west-2"
+        permissions: '0644'
+        owner: root:root
+- type: text/x-include-url
+  content: |
+    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/hardening.yaml
+    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/caddy.yaml
+    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/email-alerts.yaml
+- type: text/cloud-config
+  content: |
+    write_files:
+      # Caddy configuration file
+      - path: /etc/caddy/Caddyfile
+        content: |
+          # Basic web server configuration
+          # Replace example.com with your actual domain
+          example.com {
+            # Serve static files from /var/www/html
+            root * /var/www/html
+            file_server
+            
+            # Security headers
+            header {
+              Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+              X-Content-Type-Options "nosniff"
+              X-Frame-Options "DENY"
+              X-XSS-Protection "1; mode=block"
+            }
+            
+            # Enable compression
+            encode gzip
+            
+            # Log access
+            log {
+              output file /var/log/caddy/access.log
+              format json
+            }
           }
-      }
-    permissions: '0644'
-    owner: root:root
+        permissions: '0644'
+        owner: root:root
 
-packages:
-  - curl
+      # Sample index page
+      - path: /var/www/html/index.html
+        content: |
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Welcome</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 40px; }
+                  .container { max-width: 800px; margin: 0 auto; }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🌐 Web Server Ready!</h1>
+                  <p>Your Caddy web server is running and configured.</p>
+                  <p>Replace this file with your application content.</p>
+              </div>
+          </body>
+          </html>
+        permissions: '0644'
+        owner: www-data:www-data
 
-runcmd:
-  # Create application directory
-  - mkdir -p /opt/webapp/ssl
+    runcmd:
+      # Create directories
+      - mkdir -p /var/www/html /var/log/caddy
 
-  # Start the application
-  - cd /opt/webapp && docker-compose up -d
+      # Set proper ownership
+      - chown -R www-data:www-data /var/www/html
+      - chown -R caddy:caddy /var/log/caddy
 
-  # Configure firewall for web traffic
-  - ufw allow 80/tcp
-  - ufw allow 443/tcp
+      # Enable and start Caddy service
+      - systemctl enable caddy
+      - systemctl start caddy
 
-final_message: |
-  🌐 Web server deployment complete!
+    final_message: |
+      🌐 Caddy web server deployment complete!
 
-  Services:
-  • Nginx running in Docker container
-  • Ports 80 and 443 open
-  • Security hardening applied
-  • Email alerts configured
+      Services:
+      • Caddy web server running with automatic HTTPS
+      • Serving content from /var/www/html
+      • Security hardening applied
+      • Email alerts configured
 
-  Next steps:
-  1. Upload SSL certificates to /opt/webapp/ssl/
-  2. Deploy your application content
-  3. Configure DNS to point to this server
+      Next steps:
+      1. Update /etc/caddy/Caddyfile with your domain
+      2. Deploy your application content to /var/www/html
+      3. Configure DNS to point to this server
+      4. Caddy will automatically obtain SSL certificates

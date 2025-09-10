@@ -1,171 +1,168 @@
-#cloud-config
-# Example: Secure Meilisearch Server
-# Full-featured search server with security hardening, monitoring, and alerts
+#cloud-config-archive
 
-# Environment variables for base templates (must be before #include)
-write_files:
-  - path: /etc/environment.d/90-infrastructure.conf
-    content: "# Email Configuration\nDEVOPS_EMAIL=\"devops@yourcompany.com\"\nALERTS_EMAIL=\"alerts@yourcompany.com\" \nAWS_REGION=\"us-west-2\"\n#magic___^_^___line\n#
-      Search Configuration\nSEARCH_DOMAIN=\"search.yourcompany.com\"\nWEB_DOMAIN=\"yourcompany.com\"\n"
-    permissions: '0644'
-    owner: root:root
+- type: text/cloud-config
+  content: |
+    write_files:
+      - path: /etc/environment.d/90-infrastructure.conf
+        content: |
+          # Email Configuration
+          DEVOPS_EMAIL="devops@yourcompany.com"
+          ALERTS_EMAIL="alerts@yourcompany.com"
+          AWS_REGION="us-west-2"
 
-  # Meilisearch environment configuration
-  - path: /etc/meilisearch.env
-    content: |
-      MEILI_ENV=production
-      MEILI_MASTER_KEY=ChangeThisToASecureKey32Chars!!
-      MEILI_HTTP_ADDR=0.0.0.0:7700
-      MEILI_DB_PATH=/var/lib/meilisearch/data
-      MEILI_LOG_LEVEL=INFO
-    permissions: '0600'
-    owner: root:root
+          # Search Configuration
+          SEARCH_DOMAIN="search.yourcompany.com"
+          WEB_DOMAIN="yourcompany.com"
+        permissions: '0644'
+        owner: root:root
 
-#include
-https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/hardening.yaml
-https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/docker.yaml
-https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/nodejs.yaml
-https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/email-alerts.yaml
+      # Meilisearch environment configuration
+      - path: /etc/meilisearch.env
+        content: |
+          MEILI_ENV=production
+          MEILI_MASTER_KEY=ChangeThisToASecureKey32Chars!!
+          MEILI_HTTP_ADDR=0.0.0.0:7700
+          MEILI_DB_PATH=/var/lib/meilisearch/data
+          MEILI_LOG_LEVEL=INFO
+        permissions: '0600'
+        owner: root:root
 
-merge_how:
-  - name: list
-    settings: [append]
-  - name: dict
-    settings: [no_replace, recurse_list]
+- type: text/x-include-url
+  content: |
+    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/hardening.yaml
+    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/docker.yaml
+    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/nodejs.yaml
+    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/caddy.yaml
+    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/email-alerts.yaml
 
-# Application-specific configuration
-write_files:
-  # Docker Compose for Meilisearch
-  - path: /opt/search/docker-compose.yml
-    content: |
-      version: '3.8'
-      services:
-        meilisearch:
-          image: getmeili/meilisearch:v1.16
-          container_name: meilisearch
-          restart: always
-          env_file: /etc/meilisearch.env
+- type: text/cloud-config
+  content: |
+    merge_how:
+      - name: list
+        settings: [append]
+      - name: dict
+        settings: [no_replace, recurse_list]
+
+    write_files:
+      # Docker Compose for Meilisearch
+      - path: /opt/search/docker-compose.yml
+        content: |
+          version: '3.8'
+          services:
+            meilisearch:
+              image: getmeili/meilisearch:v1.16
+              container_name: meilisearch
+              restart: always
+              env_file: /etc/meilisearch.env
+              volumes:
+                - meilisearch_data:/var/lib/meilisearch
+              ports:
+                - "127.0.0.1:7700:7700"
+              healthcheck:
+                test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+                interval: 30s
+                timeout: 10s
+                retries: 3
           volumes:
-            - meilisearch_data:/var/lib/meilisearch
-          ports:
-            - "127.0.0.1:7700:7700"
-          healthcheck:
-            test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
-            interval: 30s
-            timeout: 10s
-            retries: 3
-      volumes:
-        meilisearch_data:
-    permissions: '0644'
-    owner: root:root
+            meilisearch_data:
+        permissions: '0644'
+        owner: root:root
 
-  # Search API service (Node.js)
-  - path: /opt/search/search-api.js
-    content: |
-      const express = require('express');
-      const { MeiliSearch } = require('meilisearch');
+      # Search API service (Node.js)
+      - path: /opt/search/search-api.js
+        content: |
+          const express = require('express');
+          const { MeiliSearch } = require('meilisearch');
 
-      const app = express();
-      const PORT = 3001;
+          const app = express();
+          const PORT = 3001;
 
-      // Load environment
-      require('dotenv').config();
-      const client = new MeiliSearch({
-        host: 'http://localhost:7700',
-        apiKey: process.env.MEILI_SEARCH_KEY
-      });
+          // Load environment
+          require('dotenv').config();
+          const client = new MeiliSearch({
+            host: 'http://localhost:7700',
+            apiKey: process.env.MEILI_SEARCH_KEY
+          });
 
-      app.use(express.json());
+          app.use(express.json());
 
-      app.get('/api/search', async (req, res) => {
-        try {
-          const { q, limit = 20 } = req.query;
-          if (!q) return res.status(400).json({ error: 'Query required' });
+          app.get('/api/search', async (req, res) => {
+            try {
+              const { q, limit = 20 } = req.query;
+              if (!q) return res.status(400).json({ error: 'Query required' });
 
-          const results = await client.index('main').search(q, { limit });
-          res.json(results);
-        } catch (error) {
-          res.status(500).json({ error: 'Search failed' });
-        }
-      });
+              const results = await client.index('main').search(q, { limit });
+              res.json(results);
+            } catch (error) {
+              res.status(500).json({ error: 'Search failed' });
+            }
+          });
 
-      app.listen(PORT, '127.0.0.1', () => {
-        console.log(`Search API running on port ${PORT}`);
-      });
-    permissions: '0644'
-    owner: root:root
+          app.listen(PORT, '127.0.0.1', () => {
+            console.log(`Search API running on port ${PORT}`);
+          });
+        permissions: '0644'
+        owner: root:root
 
-  # Reverse proxy configuration (Caddy)
-  - path: /opt/search/Caddyfile
-    content: |
-      # Load environment variables
-      import /etc/environment.d/90-infrastructure.conf
+      # Reverse proxy configuration (Caddy)
+      - path: /opt/search/Caddyfile
+        content: |
+          # Load environment variables
+          import /etc/environment.d/90-infrastructure.conf
 
-      {$SEARCH_DOMAIN} {
-        header {
-          Strict-Transport-Security "max-age=31536000"
-          X-Content-Type-Options "nosniff"
-          X-Frame-Options "DENY"
-        }
+          {$SEARCH_DOMAIN} {
+            header {
+              Strict-Transport-Security "max-age=31536000"
+              X-Content-Type-Options "nosniff"
+              X-Frame-Options "DENY"
+            }
 
-        handle /api/* {
-          reverse_proxy localhost:3001
-        }
+            handle /api/* {
+              reverse_proxy localhost:3001
+            }
 
-        handle /admin/* {
-          reverse_proxy localhost:7700
-        }
+            handle /admin/* {
+              reverse_proxy localhost:7700
+            }
 
-        respond 404
-      }
-    permissions: '0644'
-    owner: root:root
+            respond 404
+          }
+            permissions: '0644'
+            owner: root:root
 
-packages:
-  - curl
-  - jq
+        packages:
+          - curl
+          - jq
 
-runcmd:
-  # Install Caddy
-  - |
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-    apt update && apt install -y caddy
+        runcmd:
+          # Create directories
+          - mkdir -p /opt/search /var/lib/meilisearch
 
-  # Create directories
-  - mkdir -p /opt/search /var/lib/meilisearch
+          # Generate secure master key
+          - |
+            if grep -q "ChangeThisToASecureKey32Chars!!" /etc/meilisearch.env; then
+              MASTER_KEY=$(openssl rand -base64 32)
+              sed -i "s/ChangeThisToASecureKey32Chars!!/${MASTER_KEY}/" /etc/meilisearch.env
+            fi
 
-  # Generate secure master key
-  - |
-    if grep -q "ChangeThisToASecureKey32Chars!!" /etc/meilisearch.env; then
-      MASTER_KEY=$(openssl rand -base64 32)
-      sed -i "s/ChangeThisToASecureKey32Chars!!/${MASTER_KEY}/" /etc/meilisearch.env
-    fi
+          # Install Node.js dependencies
+          - cd /opt/search && npm init -y
+          - cd /opt/search && npm install express meilisearch dotenv
 
-  # Install Node.js dependencies
-  - cd /opt/search && npm init -y
-  - cd /opt/search && npm install express meilisearch dotenv
+          # Start services
+          - cd /opt/search && docker-compose up -d
 
-  # Start services
-  - cd /opt/search && docker-compose up -d
-  - systemctl enable caddy
-  - systemctl start caddy
+        final_message: |
+          🔍 Secure Meilisearch server is ready!
 
-  # Configure firewall
-  - ufw allow 80/tcp
-  - ufw allow 443/tcp
+          Services:
+          • Meilisearch: localhost:7700 (admin)
+          • Search API: localhost:3001 (public)
+          • Caddy: ports 80/443 (proxy)
+          • Security hardening applied
+          • Email alerts configured
 
-final_message: |
-  🔍 Secure Meilisearch server is ready!
-
-  Services:
-  • Meilisearch: localhost:7700 (admin)
-  • Search API: localhost:3001 (public)
-  • Caddy: ports 80/443 (proxy)
-  • Security hardening applied
-  • Email alerts configured
-
-  Next steps:
-  1. Configure DNS for your search domain
-  2. Index your content via admin endpoints
-  3. Use public search API in your applications
+          Next steps:
+          1. Configure DNS for your search domain
+          2. Index your content via admin endpoints
+          3. Use public search API in your applications
