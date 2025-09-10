@@ -2,10 +2,10 @@
 .DEFAULT_GOAL := help
 
 install-tools:
-	./scripts/install-tools.sh
+	@./scripts/install-tools.sh
 
 fmt:
-	./scripts/fmt.sh
+	@./scripts/fmt.sh
 
 test:
-	./tests/run-all-tests.sh
+	@./tests/run-all-tests.sh

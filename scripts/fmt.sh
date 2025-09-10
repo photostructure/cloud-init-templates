@@ -1,11 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
-# We can't directly use yamlfmt because cloud-init _isn't yaml_
-find . -name "*.yaml" -o -name "*.yml" | grep -v node_modules | xargs uv run ./scripts/fmt-cloud-init-yaml.py
+# Get the project root directory (where this script is located)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+cd "$PROJECT_ROOT"
+
+find . -name "*.yaml" -o -name "*.yml" | xargs yamlfmt
 
 # Format shell scripts:
-find . -name "*.sh" | grep -v node_modules | xargs shfmt -w -i 2
+find . -name "*.sh" | xargs shfmt -w -i 2
 
 # Format JavaScript, JSON, and Markdown files. Only emit warnings and errors.
 prettier --log-level warn --write .
