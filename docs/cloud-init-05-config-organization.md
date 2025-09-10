@@ -48,7 +48,6 @@ As you scale deployments, you'll want to share common configuration (hardening, 
 https://configs.company.com/
 ├── base/
 │   ├── hardening.yaml          # Security baseline for all servers
-│   ├── monitoring.yaml         # Basic monitoring setup
 │   └── logging.yaml           # Centralized logging config
 ├── environments/
 │   ├── production.yaml        # Prod-specific settings
@@ -82,7 +81,6 @@ https://configs.company.com/
 - type: text/x-include-url
   content: |
     https://configs.company.com/base/hardening.yaml
-    https://configs.company.com/base/monitoring.yaml
     https://configs.company.com/environments/production.yaml
     https://configs.company.com/services/web-server.yaml
 
@@ -103,7 +101,6 @@ https://configs.company.com/
 # Base configurations
 - type: text/x-include-url
   content: |
-    https://configs.company.com/base/monitoring.yaml
     https://configs.company.com/environments/development.yaml
     https://configs.company.com/services/database.yaml
 ```
@@ -135,7 +132,6 @@ SERVICE_TYPE=${2:-web}
 # Build deployment-specific user-data
 cloud-init devel make-mime \
   -a configs/base/hardening.yaml:cloud-config \
-  -a configs/base/monitoring.yaml:cloud-config \
   -a configs/environments/${ENVIRONMENT}.yaml:cloud-config \
   -a configs/services/${SERVICE_TYPE}.yaml:cloud-config \
   -a scripts/post-install.sh:x-shellscript \
@@ -338,7 +334,6 @@ cloud-configs/
 ├── README.md
 ├── base/
 │   ├── hardening.yaml       # Security baseline
-│   ├── monitoring.yaml      # Monitoring agents
 │   ├── logging.yaml         # Log forwarding
 │   └── packages.yaml        # Common packages
 ├── environments/
@@ -477,8 +472,7 @@ final_message: |
 # terraform/user-data.tf
 locals {
   base_configs = [
-    "https://configs.company.com/base/hardening.yaml",
-    "https://configs.company.com/base/monitoring.yaml"
+    "https://configs.company.com/base/hardening.yaml"
   ]
 
   web_configs = concat(local.base_configs, [
