@@ -21,6 +21,8 @@ packages:
   - logrotate
   - auditd
   - psmisc
+  - curl
+  - jq
 
 # Create deploy user with sudo access
 users:
@@ -38,6 +40,13 @@ ssh:
 # Disable root password login
 chpasswd:
   expire: false
+
+# Seed additional entropy from external sources
+random_seed:
+  command: ['/bin/bash', '-c', '(curl --max-time 10 --silent "https://beacon.nist.gov/beacon/2.0/pulse/last" | jq -r ".pulse.outputValue"
+      | xxd -r -p 2>/dev/null || true) && (curl -m 10 -s "https://www.random.org/cgi-bin/randbyte?nbytes=64&format=h" | xxd
+      -r -p 2>/dev/null || true)']
+  command_required: false
 
 write_files:
   # SSH hardening configuration
@@ -204,7 +213,6 @@ write_files:
       APT::Periodic::Unattended-Upgrade "1";
     permissions: "0644"
     owner: root:root
-
 
 # System hardening commands
 runcmd:
