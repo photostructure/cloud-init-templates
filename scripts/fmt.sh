@@ -3,7 +3,9 @@ set -euo pipefail
 
 # Get the project root directory (where this script is located)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Allow project root to be set externally so other projects can use us as a git submodule:
+PROJECT_ROOT="${PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
 
 cd "$PROJECT_ROOT"
 
