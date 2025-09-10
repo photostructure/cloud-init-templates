@@ -1,0 +1,31 @@
+#cloud-config
+
+# Caddy web server installation and configuration
+# Provides modern HTTPS reverse proxy capabilities
+# https://caddyserver.com/docs/install#debian-ubuntu-raspbian
+
+# The caller must set up a `/etc/caddy/Caddyfile` before enabling the service!
+
+packages:
+  - debian-keyring
+  - debian-archive-keyring
+  - apt-transport-https
+  - curl
+
+runcmd:
+  # Install Caddy
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+  - chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  - chmod o+r /etc/apt/sources.list.d/caddy-stable.list
+  - apt update
+  - apt install -y caddy
+
+  # We're not enabling nor starting the Caddy service until the caller sets up a /etc/caddy/Caddyfile:
+  # - systemctl enable caddy
+  # - systemctl start caddy
+
+  # Configure firewall for HTTP/HTTPS
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+
