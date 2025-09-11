@@ -69,21 +69,22 @@ EMAIL="${DEVOPS_EMAIL:-admin@example.com}"
 - **Default**: `us-east-1`
 - **Example**: `us-west-2`
 
-## 🔒 Security Variables
+## 🔒 ~~Security~~ Configuration Variables
 
 ### `SSH_PORT`
 
 - **Used by**: `base/hardening.yaml`
 - **Purpose**: Custom SSH port for security through obscurity
 - **Default**: `22` (standard SSH port)
-- **Example**: `2222`
+- **Example**: `2222` (but pick something else!)
 - **Notes**:
   - Default behavior: Uses standard port 22 with default fail2ban configuration
+  - Note that there are some benefits to using a port under 1024, and _different_ benefits to running on a port between 49152 and 65535.
   - Custom port: Setting any other port automatically configures:
     - UFW firewall rules (removes port 22, adds custom port)
     - fail2ban jail configuration for the custom port
     - systemd socket activation and sshd_config
-  - **Security benefit**: Moving SSH off standard port reduces automated attack attempts
+  - **Audit logging benefit**: Moving SSH off the standard port 22 substantially reduces automated attack attempts and subsequent noisy log files
 
 ## 💾 Setting Environment Variables
 
@@ -106,8 +107,6 @@ write_files:
 
       # Infrastructure
       AWS_REGION="us-west-2"
-
-      # Security
       SSH_PORT="2222"
     permissions: "0644"
     owner: root:root
@@ -126,7 +125,7 @@ Test your environment configuration:
 
 ```bash
 # SSH into your server after deployment
-ssh user@your-server
+ssh -p $SSH_PORT user@your-server
 
 # Check environment file exists
 cat /etc/environment.d/90-infrastructure.conf
