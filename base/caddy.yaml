@@ -6,6 +6,14 @@
 
 # The caller must set up a `/etc/caddy/Caddyfile` before enabling the service!
 
+# Append (don't replace) runcmd/packages when merged into an archive.
+# Without this, this doc silently overwrites everything merged before it.
+merge_how:
+  - name: list
+    settings: [append]
+  - name: dict
+    settings: [no_replace, recurse_list]
+
 packages:
   - debian-keyring
   - debian-archive-keyring

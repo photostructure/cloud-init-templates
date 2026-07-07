@@ -1,6 +1,12 @@
 # Cloud-Init Infrastructure Templates
 
-Reusable, generic cloud-init configuration templates for common server infrastructure patterns. These templates are designed to be included in your own cloud-init configurations via `#include` directives.
+Reusable, generic cloud-init configuration templates for common server infrastructure patterns. Compose them into your own server configs by **inlining** them at render time (see the composable pattern below).
+
+> ⚠️ **Do not pull these templates with `text/x-include-url` from inside a
+> `#cloud-config-archive`.** cloud-init never fetches an include nested in an
+> archive — it attaches the part inert, so the templates silently don't run. Inline
+> them instead (one `text/cloud-config` part per template, assembled at render
+> time). PhotoStructure's `cloud-init-servers` repo does this with `bin/render.py`.
 
 ## 🏗️ Architecture
 
@@ -24,18 +30,23 @@ These templates follow a **composable pattern**:
         permissions: '0644'
         owner: root:root
 
-# Include base templates
-- type: text/x-include-url
+# Base templates, INLINED by the renderer (one part per template).
+# Your renderer splices in the full contents of each base/*.yaml here.
+- type: text/cloud-config
   content: |
-    #include
-    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/hardening.yaml
-    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/docker.yaml
+    # ...full contents of base/hardening.yaml...
+- type: text/cloud-config
+  content: |
+    # ...full contents of base/docker.yaml...
 
 # Your application-specific configuration
 - type: text/cloud-config
   content: |
     # Your app config here...
 ```
+
+A ~120-line renderer (see `cloud-init-servers/bin/render.py`) turns a short
+manifest of role names into exactly this archive — nothing is fetched at boot.
 
 ## 📦 Available Base Templates
 
@@ -91,7 +102,7 @@ Templates use environment variables loaded from `/etc/environment.d/90-infrastru
 
 **You cannot mix `#include` with `#cloud-config` in the same user-data.** Instead, use `#cloud-config-archive` to combine multiple formats.
 
-**Correct approach with cloud-config-archive:**
+**Correct approach with cloud-config-archive (inline the template — see warning at top):**
 
 ```yaml
 #cloud-config-archive
@@ -106,11 +117,10 @@ Templates use environment variables loaded from `/etc/environment.d/90-infrastru
         permissions: '0644'
         owner: root:root
 
-# 2. Include base templates
-- type: text/x-include-url
+# 2. Base template, INLINED by the renderer (NOT text/x-include-url)
+- type: text/cloud-config
   content: |
-    #include
-    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/email-alerts.yaml
+    # ...full contents of base/email-alerts.yaml...
 
 # 3. Additional configuration
 - type: text/cloud-config
@@ -183,12 +193,13 @@ gh repo fork your-org/cloud-init-templates
         permissions: '0644'
         owner: root:root
 
-# Include base templates
-- type: text/x-include-url
+# Base templates, INLINED by the renderer (one part per template)
+- type: text/cloud-config
   content: |
-    #include
-    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/hardening.yaml
-    https://raw.githubusercontent.com/your-org/cloud-init-templates/main/base/docker.yaml
+    # ...full contents of base/hardening.yaml...
+- type: text/cloud-config
+  content: |
+    # ...full contents of base/docker.yaml...
 
 # Your application-specific config
 - type: text/cloud-config
@@ -202,11 +213,12 @@ gh repo fork your-org/cloud-init-templates
 
 ### 3. Deploy with cloud provider
 
-Most cloud providers accept cloud-init data during instance creation. Point to your server configuration:
+Render the self-contained user-data locally, then pass it to your provider:
 
 ```bash
-# Use raw GitHub URL for your server config
-https://raw.githubusercontent.com/your-org/your-servers/main/servers/web-server.yaml
+# See cloud-init-servers/bin/render.py
+render.py web-server > web-server.user-data
+doctl compute droplet create web-01 --user-data-file web-server.user-data ...
 ```
 
 ## 🔒 Security Best Practices

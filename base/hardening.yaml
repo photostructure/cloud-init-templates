@@ -43,9 +43,7 @@ chpasswd:
 
 # Seed additional entropy from external sources
 random_seed:
-  command: ['/bin/bash', '-c', '(curl --max-time 10 --silent "https://beacon.nist.gov/beacon/2.0/pulse/last" | jq -r ".pulse.outputValue"
-      | xxd -r -p 2>/dev/null || true) && (curl -m 10 -s "https://www.random.org/cgi-bin/randbyte?nbytes=64&format=h" | xxd
-      -r -p 2>/dev/null || true)']
+  command: ['/bin/bash', '-c', '(curl --max-time 10 --silent "https://beacon.nist.gov/beacon/2.0/pulse/last" | jq -r ".pulse.outputValue" | xxd -r -p 2>/dev/null || true) && (curl -m 10 -s "https://www.random.org/cgi-bin/randbyte?nbytes=64&format=h" | xxd -r -p 2>/dev/null || true)']
   command_required: false
 
 write_files:
@@ -115,50 +113,77 @@ write_files:
   - path: /usr/local/bin/configure-ssh-port.sh
     content: |
       #!/bin/bash
-      # Configure SSH port from environment variables
+      # Move SSH to a non-default port safely.
+      #
+      # On Ubuntu 24.04 sshd is socket-activated, so the LISTENING port is set by
+      # ssh.socket's ListenStream (not by sshd_config's Port). We set both, then
+      # verify the new port is actually listening BEFORE removing port 22 - so a
+      # failure can never lock us out.
+      set -u
 
-      # Load environment configuration
+      # Load SSH_PORT from the infrastructure environment file.
       [ -f /etc/environment.d/90-infrastructure.conf ] && . /etc/environment.d/90-infrastructure.conf
-
-      # Use environment SSH_PORT or default to 22
       SSH_PORT="${SSH_PORT:-22}"
 
-      # Only change port if it's not 22 (default)
-      if [ "$SSH_PORT" != "22" ]; then
-          echo "Configuring SSH on port $SSH_PORT"
+      if [ "$SSH_PORT" = "22" ]; then
+          echo "SSH_PORT is 22 (default); leaving SSH on port 22."
+          exit 0
+      fi
 
-          # Configure systemd socket activation (Ubuntu 22.10+)
-          mkdir -p /etc/systemd/system/ssh.socket.d
-          echo "[Socket]" > /etc/systemd/system/ssh.socket.d/override.conf
-          echo "# Clear default listeners (IPv4 and IPv6 on port 22)" >> /etc/systemd/system/ssh.socket.d/override.conf
-          echo "ListenStream=" >> /etc/systemd/system/ssh.socket.d/override.conf
-          echo "# Add new listeners on custom port" >> /etc/systemd/system/ssh.socket.d/override.conf
-          echo "ListenStream=0.0.0.0:\$SSH_PORT" >> /etc/systemd/system/ssh.socket.d/override.conf
-          echo "ListenStream=[::]:\$SSH_PORT" >> /etc/systemd/system/ssh.socket.d/override.conf
+      echo "Configuring SSH on port $SSH_PORT"
 
-          # Also set in sshd_config for compatibility
-          echo "Port $SSH_PORT" > /etc/ssh/sshd_config.d/99-custom-port.conf
+      # 1. Point the socket at the new port. NOTE: systemd does NOT expand shell
+      #    variables in ListenStream, so we write the resolved number here.
+      mkdir -p /etc/systemd/system/ssh.socket.d
+      # One address-less ListenStream binds BOTH IPv4 and IPv6 (like the vendor
+      # default 'ListenStream=22'). Do NOT list 0.0.0.0:P and [::]:P separately:
+      # with bindv6only=0 the second bind collides (EADDRINUSE) and the whole
+      # socket unit fails, leaving nothing listening - a guaranteed lockout.
+      cat > /etc/systemd/system/ssh.socket.d/override.conf <<EOF
+      [Socket]
+      # Clear the inherited port-22 listener, then bind the custom port.
+      ListenStream=
+      ListenStream=${SSH_PORT}
+      EOF
 
-          # Update UFW to allow new port
-          ufw allow "$SSH_PORT"/tcp comment 'SSH custom port'
+      # 2. Set Port in sshd_config too (used when sshd is not socket-activated).
+      echo "Port ${SSH_PORT}" > /etc/ssh/sshd_config.d/99-custom-port.conf
 
-          # Remove default SSH rule if we're using custom port
+      # 3. Open the new port in the firewall BEFORE we touch port 22.
+      ufw allow "${SSH_PORT}"/tcp comment 'SSH custom port'
+
+      # 4. Point fail2ban at the new port.
+      mkdir -p /etc/fail2ban/jail.d
+      cat > /etc/fail2ban/jail.d/sshd-custom-port.conf <<EOF
+      [sshd]
+      enabled = true
+      port = ${SSH_PORT}
+      EOF
+
+      # 5. Apply the socket change and confirm the new port is actually listening.
+      systemctl daemon-reload
+      systemctl restart ssh.socket
+      systemctl reload ssh.service 2>/dev/null || true
+
+      listening=false
+      for _ in 1 2 3 4 5; do
+          if [ -n "$(ss -Htln "sport = :${SSH_PORT}" 2>/dev/null)" ]; then
+              listening=true
+              break
+          fi
+          sleep 1
+      done
+
+      if [ "$listening" = true ]; then
+          # Safe to close port 22 now that the custom port works.
+          echo "SSH is listening on ${SSH_PORT}; removing port 22 from the firewall."
           ufw delete allow 22/tcp 2>/dev/null || true
-
-          # Configure fail2ban for custom SSH port
-          mkdir -p /etc/fail2ban/jail.d
-          echo "[sshd]" > /etc/fail2ban/jail.d/sshd-custom-port.conf
-          echo "enabled = true" >> /etc/fail2ban/jail.d/sshd-custom-port.conf
-          echo "port = $SSH_PORT" >> /etc/fail2ban/jail.d/sshd-custom-port.conf
-
-          # Reload systemd and restart SSH socket (ignore failures for compatibility)
-          systemctl daemon-reload || true
-          systemctl restart ssh.socket || true
-          systemctl reload ssh.service || true
-
-          echo "SSH configured on port $SSH_PORT"
+          echo "SSH configured on port ${SSH_PORT}."
       else
-          echo "Using default SSH port 22"
+          # Never lock ourselves out: keep 22 open and flag the failure loudly.
+          echo "ERROR: SSH is not listening on ${SSH_PORT}; leaving port 22 open for recovery." >&2
+          echo "SSH port change to ${SSH_PORT} FAILED - port 22 left open. Inspect 'systemctl status ssh.socket'." \
+              > /root/SSH-PORT-CHANGE-FAILED.txt
       fi
     permissions: "0755"
     owner: root:root
@@ -224,13 +249,20 @@ runcmd:
     chown deploy:deploy /home/deploy/.initial_password
     chmod 600 /home/deploy/.initial_password
 
-  # Move SSH keys from root to deploy user (cloud provider pre-installs them)
+  # Give the deploy user the SSH key the cloud provider installed for root.
+  # Do NOT abort the run if it is missing (that skips all hardening below, which
+  # is worse than continuing) - flag it loudly and fall back to the DO console.
   - mkdir -p /home/deploy/.ssh
   - |
-    mv /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys || { echo "ERROR: No root SSH keys found"; exit 1; }
+    if [ -s /root/.ssh/authorized_keys ]; then
+      mv /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
+    elif [ ! -s /home/deploy/.ssh/authorized_keys ]; then
+      echo "WARNING: no SSH key found for root or deploy - add one via the DigitalOcean console." \
+        | tee /root/NO-SSH-KEY-FOUND.txt >&2
+    fi
   - chown -R deploy:deploy /home/deploy/.ssh
   - chmod 700 /home/deploy/.ssh
-  - chmod 600 /home/deploy/.ssh/authorized_keys
+  - chmod 600 /home/deploy/.ssh/authorized_keys 2>/dev/null || true
 
   # Disable unnecessary MOTD components
   - chmod -x /etc/update-motd.d/10-help-text 2>/dev/null || true
@@ -239,9 +271,6 @@ runcmd:
 
   # Apply kernel security settings
   - sysctl -p /etc/sysctl.d/99-security-hardening.conf
-
-  # Configure SSH port from environment (after UFW is ready)
-  - /usr/local/bin/configure-ssh-port.sh
 
   # Basic file permissions hardening
   - chmod 700 /root
@@ -271,27 +300,36 @@ runcmd:
       ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N "" -C "$(hostname)-$(date +%Y-%m-%d)"
     fi
 
-  # Configure firewall (allow common web ports)
+  # Configure firewall. Port 22 stays open as a bootstrap rule; the SSH-port
+  # step below removes it only once the custom port is verified listening.
   - ufw --force reset
   - ufw default deny incoming
   - ufw default allow outgoing
-  - ufw allow 22/tcp comment 'SSH'
+  - ufw allow 22/tcp comment 'SSH bootstrap'
   - ufw allow 80/tcp comment 'HTTP'
   - ufw allow 443/tcp comment 'HTTPS'
   - ufw --force enable
 
-  # Test SSH configuration before restart
+  # Validate sshd config, then enable services.
   - sshd -t
-
-  # Enable and start services
   - systemctl restart sshd
   - systemctl enable unattended-upgrades fail2ban auditd
   - systemctl start unattended-upgrades fail2ban auditd
 
+  # Move SSH to its custom port LAST - after the firewall is up and sshd is
+  # running - and only close port 22 once the new port is verified listening.
+  - /usr/local/bin/configure-ssh-port.sh
+
+# Reboot after hardening, but ONLY if SSH is reachable, so a botched SSH/firewall
+# change leaves the box up and recoverable instead of rebooting into a lockout.
+# (A failed runcmd does NOT stop a reboot; this condition does.)
 power_state:
   mode: reboot
   message: "Rebooting after hardening setup"
   timeout: 60
-  condition: True
+  condition:
+    - /bin/bash
+    - -c
+    - '. /etc/environment.d/90-infrastructure.conf 2>/dev/null; p="${SSH_PORT:-22}"; test -n "$(ss -Htln "sport = :$p")"'
 
-final_message: "Base hardening complete. SSH on port 22 (or custom port if configured). System ready after $UPTIME seconds."
+final_message: "Base hardening complete. SSH reachable on the configured port. System ready after $UPTIME seconds."

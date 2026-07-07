@@ -130,7 +130,7 @@ write_files:
       fi
 
       # Check for failed critical services
-      CRITICAL_SERVICES="nginx ssh docker postgresql listmonk fail2ban ufw"
+      CRITICAL_SERVICES="caddy ssh docker postgresql fail2ban ufw"
       for service in $CRITICAL_SERVICES; do
         if systemctl is-enabled "$service" >/dev/null 2>&1; then
           if systemctl is-failed "$service" >/dev/null 2>&1; then
@@ -151,12 +151,15 @@ write_files:
     permissions: "0600"
     owner: alerts:alerts
 
-  # AWS credentials template (substitute environment variables during deployment)
+  # AWS SES credentials for the alerts user.
+  # Filled POST-BOOT over SSH (never baked into user-data, which is readable via
+  # the DigitalOcean metadata service). Until filled, send-alert.sh is a no-op.
+  # See the deployment guide: write the real keys here, then `chown alerts:alerts`.
   - path: /var/lib/alerts/.aws/credentials
     content: |
       [default]
-      aws_access_key_id = CHANGE_ME
-      aws_secret_access_key = CHANGE_ME
+      aws_access_key_id = REPLACE_AFTER_BOOT
+      aws_secret_access_key = REPLACE_AFTER_BOOT
     permissions: "0600"
     owner: alerts:alerts
 
@@ -181,7 +184,6 @@ runcmd:
   - echo "session optional pam_exec.so setsid=1 /usr/local/bin/notify-login.sh" >> /etc/pam.d/login
 
   # Boot notification
-  - sleep 60 && sudo -u alerts /usr/local/bin/send-alert.sh "Server Boot" "$(hostname) has completed startup and monitoring
-    is active"
+  - sleep 60 && sudo -u alerts /usr/local/bin/send-alert.sh "Server Boot" "$(hostname) has completed startup and monitoring is active"
 
 final_message: "Email alerting configured. Edit /var/lib/alerts/.aws/credentials before deployment."

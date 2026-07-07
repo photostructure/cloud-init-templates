@@ -10,6 +10,19 @@ As you scale deployments, you'll want to share common configuration (hardening, 
 
 **Best approach for sharing configs across deployments with proper ordering**
 
+> ⚠️ **Do NOT put `text/x-include-url` inside a `#cloud-config-archive`.**
+> cloud-init only expands an include when it is a **top-level** part. Inside an
+> archive, `_explode_archive()` attaches the include part inert and never fetches
+> it — so the referenced base templates silently never run. (This is long-standing
+> behavior, verifiable in `cloudinit/user_data.py`.) The `#include`-a-list-of-URLs
+> pattern below is only valid as top-level user-data, not as an archive part.
+>
+> **To share templates in an archive, INLINE them** — one `text/cloud-config` part
+> per template, assembled at render time. That is what the PhotoStructure
+> `cloud-init-servers` repo does with `bin/render.py`, and what the "Cloud Config
+> Archives (YAML alternative)" and `cloud-init devel make-mime` examples below show.
+> The rendered archive is self-contained: nothing is fetched at boot.
+
 ### Basic Pattern
 
 ```yaml
@@ -26,12 +39,14 @@ As you scale deployments, you'll want to share common configuration (hardening, 
         permissions: '0644'
         owner: root:root
 
-# Include base configurations
-- type: text/x-include-url
+# Base configurations, INLINED (one part per template) by the renderer.
+# Do NOT use `text/x-include-url` here — an archive never fetches it.
+- type: text/cloud-config
   content: |
-    https://configs.company.com/base-hardening.yaml
-    https://configs.company.com/monitoring-alerts.yaml
-    https://configs.company.com/web-server-specific.yaml
+    # ...full contents of base-hardening.yaml, spliced in at render time...
+- type: text/cloud-config
+  content: |
+    # ...full contents of monitoring-alerts.yaml, spliced in at render time...
 
 # Service-specific overrides
 - type: text/cloud-config

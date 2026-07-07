@@ -4,6 +4,13 @@
 # Provides automatic IP range updates for trusted proxies and origin server protection
 # Requires: base/caddy.yaml to be included first
 
+# Append (don't replace) when merged into an archive.
+merge_how:
+  - name: list
+    settings: [append]
+  - name: dict
+    settings: [no_replace, recurse_list]
+
 write_files:
   # Systemd override for Caddy service
   - path: /etc/systemd/system/caddy.service.d/cloudflare.conf
@@ -13,36 +20,49 @@ write_files:
     permissions: '0644'
     owner: root:root
 
+  # Reusable Caddyfile snippet: only accept traffic that arrives via Cloudflare.
+  # Any Caddyfile can `import cloudflare-only` inside a site block. Provided here
+  # so every Cloudflare-fronted server gets it (previously only static-web had it).
+  - path: /usr/share/caddy/snippets/cloudflare-only.caddyfile
+    content: |
+      # Block non-Cloudflare traffic (origin server protection)
+      (cloudflare-only) {
+        @blocked not remote_ip {env.CF_CIDRS}
+        respond @blocked "<h1>Access denied</h1><p>This server only accepts traffic through Cloudflare.</p>" 403
+      }
+    permissions: '0644'
+    owner: root:root
+
   - path: /usr/local/bin/update-cloudflare-ips-caddy.sh
     content: |
       #!/bin/bash
-      
+
       # Script to update Cloudflare IPs via environment file
-      
+
       # Configuration
       ENV_FILE="/etc/caddy/cloudflare.env"
       LOG_FILE="/var/log/cloudflare-update.log"
-      
+
       # Function to log with timestamp
       log_message() {
           echo "$(date '+%Y-%m-%d %H:%M:%S'): $1" >> "$LOG_FILE"
       }
-      
+
       # Fetch current Cloudflare IP ranges
       CLOUDFLARE_IPV4=$(curl -s -L https://www.cloudflare.com/ips-v4)
       CLOUDFLARE_IPV6=$(curl -s -L https://www.cloudflare.com/ips-v6)
-      
+
       # Check if fetch was successful
       if [ -z "$CLOUDFLARE_IPV4" ] || [ -z "$CLOUDFLARE_IPV6" ]; then
           log_message "ERROR: Failed to fetch Cloudflare IP ranges"
           exit 1
       fi
-      
+
       # Combine IPv4 and IPv6 ranges into a single space-separated string
       ALL_RANGES="$(printf "$CLOUDFLARE_IPV4" | sort --version-sort | tr '\n' ' ')$(echo "$CLOUDFLARE_IPV6" | sort --version-sort | tr '\n' ' ')"
-      
+
       log_message "Found $(echo "$CLOUDFLARE_IPV4" | wc -l) IPv4 and $(echo "$CLOUDFLARE_IPV6" | wc -l) IPv6 ranges"
-      
+
       # Update environment file
       cat > "$ENV_FILE" << EOF
       # Cloudflare IP ranges for trusted proxies and origin server protection
