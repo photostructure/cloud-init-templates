@@ -162,6 +162,39 @@ else
   FAILED_TESTS=$((FAILED_TESTS + 1))
 fi
 
+# Cloud-init prefixes root's datasource keys with a forced command when root
+# login is disabled. Only that known prefix may be removed: existing deploy or
+# distro-user key restrictions and comments must remain byte-for-byte intact.
+root_key_normalizer='s/^no-port-forwarding,no-agent-forwarding,no-X11-forwarding,command="echo \x27Please login as the user \\"[^"]+\\" rather than the user \\"root\\"\.\x27;echo;sleep 10;exit 142"[[:space:]]+//'
+cloud_init_root_prefix="no-port-forwarding,no-agent-forwarding,no-X11-forwarding,command=\"echo 'Please login as the user \\\"ubuntu\\\" rather than the user \\\"root\\\".';echo;sleep 10;exit 142\""
+wrapped_key="$cloud_init_root_prefix ssh-ed25519 AAAACLOUD cloud-init"
+legacy_wrapped_key="$cloud_init_root_prefix ed25519 AAAALEGACY legacy-cloud-init"
+restricted_key='from="203.0.113.0/24",restrict ssh-ed25519 AAAARESTRICTED admin@example'
+commented_key='ssh-ed25519 AAAACOMMENT personal ssh-key'
+
+if grep -Fq -- "$root_key_normalizer" "$HARDENING_FILE" &&
+  grep -Fq "if [ \"\$strip_cloud_init_root_prefix\" = true ]; then" "$HARDENING_FILE" &&
+  grep -Fq 'strip_cloud_init_root_prefix=true' "$HARDENING_FILE"; then
+  echo -e "${GREEN}✓${NC} Root-key normalization is limited to cloud-init's forced-command prefix"
+else
+  echo -e "${RED}✗${NC} Root-key normalization guard is missing"
+  FAILED_TESTS=$((FAILED_TESTS + 1))
+fi
+
+normalized_keys=$(printf '%s\n' "$wrapped_key" "$legacy_wrapped_key" "$restricted_key" "$commented_key" | sed -E "$root_key_normalizer")
+expected_keys=$(printf '%s\n' \
+  'ssh-ed25519 AAAACLOUD cloud-init' \
+  'ed25519 AAAALEGACY legacy-cloud-init' \
+  "$restricted_key" \
+  "$commented_key")
+
+if [ "$normalized_keys" = "$expected_keys" ]; then
+  echo -e "${GREEN}✓${NC} Root-key normalization preserves restrictions and comments"
+else
+  echo -e "${RED}✗${NC} Root-key normalization changed caller-supplied key content"
+  FAILED_TESTS=$((FAILED_TESTS + 1))
+fi
+
 # Test 7: Automatic Updates
 echo -e "\n${YELLOW}Test 7: Automatic Updates${NC}"
 

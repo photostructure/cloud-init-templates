@@ -241,7 +241,7 @@ write_files:
 
 # System hardening commands
 runcmd:
-  # Generate random password for deploy user and save to file. 28 hex characters is 112 bits "which is enough entropy for anyone" -billg
+  # Generate random password for deploy user and save to file. 28 hex characters is 112 bits "which is enough entropy for anyone"
   - |
     DEPLOY_PASSWORD=$(openssl rand -hex 28)
     echo "deploy:$DEPLOY_PASSWORD" | chpasswd
@@ -249,15 +249,41 @@ runcmd:
     chown deploy:deploy /home/deploy/.initial_password
     chmod 600 /home/deploy/.initial_password
 
-  # Give the deploy user the SSH key the cloud provider installed for root.
-  # Do NOT abort the run if it is missing (that skips all hardening below, which
-  # is worse than continuing) - flag it loudly and fall back to the DO console.
+  # Give the deploy user the SSH key the cloud provider installed at boot.
+  # Providers put it in different places: DigitalOcean and Hetzner Cloud both
+  # write root's authorized_keys, but a stock Ubuntu/Debian cloud image assigns
+  # the datasource keys to the distro default user instead. Check both.
+  #
+  # When an image leaves cloud-init's `disable_root` at its default, root's key
+  # carries a forced command that refuses the login. Strip only that known
+  # cloud-init prefix after moving a root key; preserve all caller-supplied
+  # authorized_keys restrictions and comments.
+  #
+  # Do NOT abort the run if no key is found (that skips all hardening below,
+  # which is worse than continuing) - flag it loudly and fall back to the
+  # provider's web console (DigitalOcean droplet console, Hetzner Cloud VNC).
   - mkdir -p /home/deploy/.ssh
   - |
+    strip_cloud_init_root_prefix=false
     if [ -s /root/.ssh/authorized_keys ]; then
+      strip_cloud_init_root_prefix=true
       mv /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
     elif [ ! -s /home/deploy/.ssh/authorized_keys ]; then
-      echo "WARNING: no SSH key found for root or deploy - add one via the DigitalOcean console." \
+      for src in /home/ubuntu/.ssh/authorized_keys /home/debian/.ssh/authorized_keys; do
+        [ -s "$src" ] || continue
+        # cp, not mv: do not lock ourselves out of the default user mid-boot.
+        cp "$src" /home/deploy/.ssh/authorized_keys
+        break
+      done
+    fi
+    if [ -s /home/deploy/.ssh/authorized_keys ]; then
+      if [ "$strip_cloud_init_root_prefix" = true ]; then
+        sed -i -E \
+          's/^no-port-forwarding,no-agent-forwarding,no-X11-forwarding,command="echo \x27Please login as the user \\"[^"]+\\" rather than the user \\"root\\"\.\x27;echo;sleep 10;exit 142"[[:space:]]+//' \
+          /home/deploy/.ssh/authorized_keys
+      fi
+    else
+      echo "WARNING: no SSH key found for root, the distro default user, or deploy - add one via the provider's web console." \
         | tee /root/NO-SSH-KEY-FOUND.txt >&2
     fi
   - chown -R deploy:deploy /home/deploy/.ssh
