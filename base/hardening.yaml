@@ -115,10 +115,12 @@ write_files:
       #!/bin/bash
       # Move SSH to a non-default port safely.
       #
-      # On Ubuntu 24.04 sshd is socket-activated, so the LISTENING port is set by
-      # ssh.socket's ListenStream (not by sshd_config's Port). We set both, then
-      # verify the new port is actually listening BEFORE removing port 22 - so a
-      # failure can never lock us out.
+      # On Ubuntu 24.04 and 26.04 sshd is socket-activated (ssh.socket enabled,
+      # ssh.service disabled), so the LISTENING port is set by ssh.socket's
+      # ListenStream, not by sshd_config's Port. We set both, then verify the new
+      # port is actually listening BEFORE removing port 22 - so a failure can
+      # never lock us out, and so this keeps working if socket activation goes
+      # away in a future release.
       set -u
 
       # Load SSH_PORT from the infrastructure environment file.
@@ -135,15 +137,26 @@ write_files:
       # 1. Point the socket at the new port. NOTE: systemd does NOT expand shell
       #    variables in ListenStream, so we write the resolved number here.
       mkdir -p /etc/systemd/system/ssh.socket.d
-      # One address-less ListenStream binds BOTH IPv4 and IPv6 (like the vendor
-      # default 'ListenStream=22'). Do NOT list 0.0.0.0:P and [::]:P separately:
-      # with bindv6only=0 the second bind collides (EADDRINUSE) and the whole
-      # socket unit fails, leaving nothing listening - a guaranteed lockout.
+      # Two things matter here, and both were verified against real systemd on
+      # 26.04:
+      #
+      # 1. BindIPv6Only=both is REQUIRED, not decoration. The vendor unit sets
+      #    BindIPv6Only=ipv6-only (it can, because it declares a separate v4
+      #    listener). Clearing ListenStream and setting one bare port INHERITS
+      #    ipv6-only, which yields a single [::] socket: IPv6 connects, IPv4 is
+      #    refused. That is a lockout for anyone reaching the box by IPv4.
+      #
+      # 2. Do NOT go back to declaring the v4 and v6 wildcards separately for
+      #    the same port: with bindv6only=0 the second bind collides
+      #    (EADDRINUSE) and the whole socket unit fails, leaving nothing
+      #    listening - a different guaranteed lockout.
       cat > /etc/systemd/system/ssh.socket.d/override.conf <<EOF
       [Socket]
-      # Clear the inherited port-22 listener, then bind the custom port.
+      # Clear the inherited port-22 listeners, then bind the custom port.
       ListenStream=
       ListenStream=${SSH_PORT}
+      # Must be restated: see (1) above. Without it this socket is IPv6-only.
+      BindIPv6Only=both
       EOF
 
       # 2. Set Port in sshd_config too (used when sshd is not socket-activated).
@@ -165,9 +178,17 @@ write_files:
       systemctl restart ssh.socket
       systemctl reload ssh.service 2>/dev/null || true
 
+      # Verify that something is listening AND that IPv4 can actually connect.
+      # `ss -Htln` alone is a false-positive trap: an IPv6-only socket prints a
+      # matching [::] line and exits 0 while every IPv4 client gets
+      # ECONNREFUSED - which is exactly the failure BindIPv6Only=both prevents.
+      # bash's /dev/tcp is used so this does not depend on nc being installed.
+      # On a genuinely IPv6-only host this probe fails and port 22 stays open:
+      # that is the safe direction to fail, and it is loud.
       listening=false
       for _ in 1 2 3 4 5; do
-          if [ -n "$(ss -Htln "sport = :${SSH_PORT}" 2>/dev/null)" ]; then
+          if [ -n "$(ss -Htln "sport = :${SSH_PORT}" 2>/dev/null)" ] &&
+              timeout 2 bash -c ": >/dev/tcp/127.0.0.1/${SSH_PORT}" 2>/dev/null; then
               listening=true
               break
           fi
@@ -181,9 +202,14 @@ write_files:
           echo "SSH configured on port ${SSH_PORT}."
       else
           # Never lock ourselves out: keep 22 open and flag the failure loudly.
-          echo "ERROR: SSH is not listening on ${SSH_PORT}; leaving port 22 open for recovery." >&2
-          echo "SSH port change to ${SSH_PORT} FAILED - port 22 left open. Inspect 'systemctl status ssh.socket'." \
-              > /root/SSH-PORT-CHANGE-FAILED.txt
+          echo "ERROR: SSH is not reachable on ${SSH_PORT} over IPv4; leaving port 22 open for recovery." >&2
+          {
+              echo "SSH port change to ${SSH_PORT} FAILED - port 22 left open."
+              echo "Either nothing is listening, or the socket is IPv6-only."
+              echo "Inspect:  systemctl status ssh.socket"
+              echo "          systemctl show ssh.socket -p Listen -p BindIPv6Only"
+              echo "          ss -Htln4 'sport = :${SSH_PORT}'"
+          } > /root/SSH-PORT-CHANGE-FAILED.txt
       fi
     permissions: "0755"
     owner: root:root
