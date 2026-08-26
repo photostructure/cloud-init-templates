@@ -28,7 +28,21 @@ packages:
 users:
   - name: deploy
     gecos: "System Administrator"
-    groups: [sudo]
+    # systemd-journal, so reading logs does not require sudo. /var/log/journal
+    # is root:systemd-journal with an ACL granting adm as well, so either group
+    # works -- systemd-journal is the tighter one: `adm` additionally grants all
+    # of /var/log (auth.log, syslog) and does not help with the app's own JSONL
+    # logs, which are owned by the service user.
+    #
+    # This does not weaken the deploy/service split: the application secrets live
+    # in a root-owned 0400 EnvironmentFile and in the service user's environ,
+    # neither of which the journal exposes. Scanned before granting it -- no
+    # Stripe keys, PASETO blobs, or AWS keys in 30 days of journal.
+    #
+    # It stays true only while nothing logs a secret. Note that sudo records
+    # every command line it runs, so a secret passed in argv lands here
+    # permanently: pass them on stdin.
+    groups: [sudo, systemd-journal]
     shell: /bin/bash
     sudo: "ALL=(ALL:ALL) ALL"
     # SSH keys moved from root during setup
