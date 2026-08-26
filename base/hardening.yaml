@@ -267,7 +267,20 @@ write_files:
 
 # System hardening commands
 runcmd:
-  # Generate random password for deploy user and save to file. 28 hex characters is 112 bits "which is enough entropy for anyone"
+  # Generate the deploy user's sudo password. 28 hex characters is 112 bits,
+  # "which is enough entropy for anyone".
+  #
+  # The file is a ONE-TIME PICKUP POINT, not storage. deploy's sudo rule asks
+  # for a password, but while the password sits here -- owned by deploy, on the
+  # same box -- it gates nothing: anyone who can SSH in as deploy can read it
+  # and escalate. It only becomes a second factor once it lives somewhere the
+  # SSH key does not. There is no other channel to deliver it, hence the file.
+  #
+  # Collect it and empty it as soon as the box is provisioned:
+  #   scripts/fetch-deploy-password.sh <host> <ssh_port> [ssh_key]
+  # which verifies the password authenticates sudo before removing the only
+  # copy, then prints it for your password manager. After that, supply it from
+  # your side:  ssh ... 'sudo -S -v && sudo <cmd>' <<< "$PASSWORD"
   - |
     DEPLOY_PASSWORD=$(openssl rand -hex 28)
     echo "deploy:$DEPLOY_PASSWORD" | chpasswd
