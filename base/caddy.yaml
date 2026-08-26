@@ -20,6 +20,23 @@ packages:
   - apt-transport-https
   - curl
 
+write_files:
+  # Ubuntu's own caddy is frozen at 2.6.2 and, on an ESM-attached box, ships
+  # from esm.ubuntu.com with pin-priority 510 -- which beats Cloudsmith's
+  # default 500. Without this pin `apt install caddy` reports "already the
+  # newest version" and silently leaves 2.6.2 installed, which predates
+  # `trusted_proxies` and `client_ip_headers` as server options and cannot
+  # parse these Caddyfiles at all. Verified on Ubuntu 26.04: the pin moves the
+  # candidate from 2.6.2-14ubuntu0.26.04.1~esm1 to Cloudsmith's 2.11.4.
+  # On a box with no ESM subscription this pin is simply a no-op.
+  - path: /etc/apt/preferences.d/caddy-cloudsmith
+    content: |
+      Package: caddy
+      Pin: origin dl.cloudsmith.io
+      Pin-Priority: 600
+    permissions: "0644"
+    owner: root:root
+
 runcmd:
   # Install Caddy
   - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -28,6 +45,27 @@ runcmd:
   - chmod 644 /etc/apt/sources.list.d/caddy-stable.list
   - apt update
   - apt install -y caddy
+
+  # Report a silently-wrong caddy instead of leaving it to be discovered when
+  # the Caddyfile fails to load. Do NOT `exit 1` here: cloud-init concatenates
+  # every template's runcmd into one script, so a non-zero exit would skip the
+  # roles that follow. Leave a marker the way configure-ssh-port.sh does.
+  - |
+    # Cloudsmith builds print "v2.11.4 h1:...", the Ubuntu build prints a bare
+    # "2.6.2" - so the leading v must be optional, or this keys on the prefix
+    # rather than the version. Accept 2.7+ and any future major >= 3.
+    if caddy version 2>/dev/null | grep -qE '^v?(2\.([7-9]|[1-9][0-9])|[3-9])\.'; then
+      echo "caddy $(caddy version | head -1) installed."
+    else
+      echo "ERROR: caddy is missing or older than 2.7; these configs need >= 2.7." >&2
+      {
+        echo "Installed caddy: $(caddy version 2>&1 | head -1)"
+        echo "These Caddyfiles use trusted_proxies/client_ip_headers as server"
+        echo "options, which 2.6.x cannot parse. The Cloudsmith apt pin in"
+        echo "/etc/apt/preferences.d/caddy-cloudsmith did not take effect."
+        echo "Diagnose with: apt-cache policy caddy"
+      } > /root/CADDY-VERSION-TOO-OLD.txt
+    fi
 
   # We're not enabling nor starting the Caddy service until the caller sets up a /etc/caddy/Caddyfile:
   # - systemctl enable caddy
