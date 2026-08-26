@@ -89,10 +89,16 @@ write_files:
       trusted_proxies static $ALL_RANGES
       EOF
 
+      # Loopback is allowed alongside the Cloudflare ranges so an on-box health
+      # check works -- `curl -sk https://localhost/ping` is how you confirm the
+      # origin serves TLS before any DNS points at it, and every deployment
+      # guide here tells you to run it. It is not a hole: 127.0.0.1 is not
+      # reachable from off the box, and the bootstrap snippet this replaces
+      # already trusted it.
       cat > "$ONLY_FILE.new" << EOF
       # Generated $(date) by /usr/local/bin/update-cloudflare-ips-caddy.sh - do not edit.
       (cloudflare-only) {
-        @blocked not remote_ip $ALL_RANGES
+        @blocked not remote_ip 127.0.0.1/32 ::1/128 $ALL_RANGES
         respond @blocked "<h1>Access denied</h1><p>This server only accepts traffic through Cloudflare.</p>" 403
       }
       EOF
@@ -109,11 +115,22 @@ write_files:
           exit 0
       fi
 
-      if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 \
-          && systemctl reload caddy; then
-          log_message "SUCCESS: reloaded Caddy with the new ranges"
+      # Validate AS THE CADDY USER. `caddy validate` provisions the config's
+      # modules, so a root-run validate against a config with a file log creates
+      # that log owned by root:root 0600 -- and the caddy user can then never
+      # open it, so every subsequent reload fails with "permission denied".
+      # Observed on the first live boot. runuser keeps the check honest without
+      # letting it create root-owned artifacts.
+      # restart, not reload: these Caddyfiles set `admin off`, and a systemd
+      # reload of Caddy goes through the admin API on :2019. With that endpoint
+      # disabled every reload exits "connection refused", so this daily refresh
+      # would log an error and quietly leave the previous ranges in place until
+      # they went stale enough to start rejecting real Cloudflare traffic.
+      if runuser -u caddy -- caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 \
+          && systemctl restart caddy; then
+          log_message "SUCCESS: restarted Caddy with the new ranges"
       else
-          log_message "ERROR: Caddy did not reload with the new ranges"
+          log_message "ERROR: Caddy did not restart with the new ranges"
           exit 1
       fi
     permissions: '0755'
