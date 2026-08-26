@@ -77,12 +77,22 @@ write_files:
 
       $BODY"
 
-      # Send via SES
+      # Send via SES.
+      #
+      # These are AWS CLI **v2** flags. v2 exposes ses send-email as a
+      # simplified interface -- --from/--to/--subject/--text -- and rejects the
+      # v1 shape (--source, --destination ToAddresses=, --message Subject={...})
+      # with "the following arguments are required: --from". The boxes install
+      # CLI v2, so the v1 spelling never sent a single alert on any of them.
+      #
+      # It also avoids quoting the body into a structured --message blob, where
+      # a single apostrophe in the text broke the argument.
       aws ses send-email \
         --region "$REGION" \
-        --source "$FROM_EMAIL" \
-        --destination "ToAddresses=$TO_EMAIL" \
-        --message "Subject={Data='[ALERT] $SUBJECT',Charset=utf-8},Body={Text={Data='$FULL_BODY',Charset=utf-8}}" \
+        --from "$FROM_EMAIL" \
+        --to "$TO_EMAIL" \
+        --subject "[ALERT] $SUBJECT" \
+        --text "$FULL_BODY" \
         2>/tmp/ses-error.log
 
       if [ $? -eq 0 ]; then
