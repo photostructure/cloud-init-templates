@@ -11,25 +11,39 @@ merge_how:
   - name: dict
     settings: [no_replace, recurse_list]
 
+# The Cloudflare ranges are delivered as generated Caddyfile snippets holding
+# literal CIDRs, never as an environment variable. `{env.NAME}` cannot carry a
+# list here, in two independent ways:
+#
+#   * The Caddyfile lexer substitutes `{env.NAME}` inside a single token, so a
+#     space-separated value reaches `remote_ip` as one malformed CIDR and
+#     provisioning fails ("unexpected character").
+#   * `trusted_proxies static` does not expand placeholders at all. It stores
+#     the placeholder text verbatim and fails to provision even for a single
+#     range.
+#
+# Either one stops Caddy from starting. Verified against Caddy 2.10.0.
+
 write_files:
-  # Systemd override for Caddy service
-  - path: /etc/systemd/system/caddy.service.d/cloudflare.conf
+  # Bootstrap snippets, replaced on first run of the updater below. They are
+  # valid Caddyfile and fail CLOSED - only loopback is trusted - so a box whose
+  # first fetch fails serves nothing to the internet rather than everything,
+  # while `curl -sk https://localhost/...` still works on the box itself.
+  - path: /etc/caddy/snippets/cloudflare-only.caddyfile
     content: |
-      [Service]
-      EnvironmentFile=/etc/caddy/cloudflare.env
+      # PLACEHOLDER - overwritten by /usr/local/bin/update-cloudflare-ips-caddy.sh
+      (cloudflare-only) {
+        @blocked not remote_ip 127.0.0.1/32 ::1/128
+        respond @blocked "<h1>Access denied</h1><p>This server only accepts traffic through Cloudflare.</p>" 403
+      }
     permissions: '0644'
     owner: root:root
 
-  # Reusable Caddyfile snippet: only accept traffic that arrives via Cloudflare.
-  # Any Caddyfile can `import cloudflare-only` inside a site block. Provided here
-  # so every Cloudflare-fronted server gets it (previously only static-web had it).
-  - path: /usr/share/caddy/snippets/cloudflare-only.caddyfile
+  # Import this INSIDE the global options `servers { }` block.
+  - path: /etc/caddy/snippets/cloudflare-trusted-proxies.caddyfile
     content: |
-      # Block non-Cloudflare traffic (origin server protection)
-      (cloudflare-only) {
-        @blocked not remote_ip {env.CF_CIDRS}
-        respond @blocked "<h1>Access denied</h1><p>This server only accepts traffic through Cloudflare.</p>" 403
-      }
+      # PLACEHOLDER - overwritten by /usr/local/bin/update-cloudflare-ips-caddy.sh
+      trusted_proxies static 127.0.0.1/32 ::1/128
     permissions: '0644'
     owner: root:root
 
@@ -37,47 +51,69 @@ write_files:
     content: |
       #!/bin/bash
 
-      # Script to update Cloudflare IPs via environment file
+      # Regenerate the Caddyfile snippets holding Cloudflare's IP ranges.
+      # See the header of this cloud-config for why these are literal CIDRs in
+      # generated snippets rather than an environment variable.
 
-      # Configuration
-      ENV_FILE="/etc/caddy/cloudflare.env"
+      set -uo pipefail
+
+      SNIPPET_DIR="/etc/caddy/snippets"
+      ONLY_FILE="$SNIPPET_DIR/cloudflare-only.caddyfile"
+      PROXIES_FILE="$SNIPPET_DIR/cloudflare-trusted-proxies.caddyfile"
       LOG_FILE="/var/log/cloudflare-update.log"
 
-      # Function to log with timestamp
       log_message() {
           echo "$(date '+%Y-%m-%d %H:%M:%S'): $1" >> "$LOG_FILE"
       }
 
-      # Fetch current Cloudflare IP ranges
       CLOUDFLARE_IPV4=$(curl -s -L https://www.cloudflare.com/ips-v4)
       CLOUDFLARE_IPV6=$(curl -s -L https://www.cloudflare.com/ips-v6)
 
-      # Check if fetch was successful
-      if [ -z "$CLOUDFLARE_IPV4" ] || [ -z "$CLOUDFLARE_IPV6" ]; then
-          log_message "ERROR: Failed to fetch Cloudflare IP ranges"
+      # Keep only well-formed CIDRs. A captive portal or an error page would
+      # otherwise be written straight into the Caddyfile and stop Caddy booting.
+      ALL_RANGES=$(printf '%s\n%s\n' "$CLOUDFLARE_IPV4" "$CLOUDFLARE_IPV6" \
+          | grep -E '^[0-9a-fA-F.:]+/[0-9]+$' \
+          | sort --version-sort \
+          | tr '\n' ' ')
+
+      if [ -z "${ALL_RANGES// /}" ]; then
+          log_message "ERROR: no usable Cloudflare ranges fetched; keeping the existing snippets"
           exit 1
       fi
 
-      # Combine IPv4 and IPv6 ranges into a single space-separated string
-      ALL_RANGES="$(printf "$CLOUDFLARE_IPV4" | sort --version-sort | tr '\n' ' ')$(echo "$CLOUDFLARE_IPV6" | sort --version-sort | tr '\n' ' ')"
+      mkdir -p "$SNIPPET_DIR"
 
-      log_message "Found $(echo "$CLOUDFLARE_IPV4" | wc -l) IPv4 and $(echo "$CLOUDFLARE_IPV6" | wc -l) IPv6 ranges"
-
-      # Update environment file
-      cat > "$ENV_FILE" << EOF
-      # Cloudflare IP ranges for trusted proxies and origin server protection
-      # This file is automatically updated by /usr/local/bin/update-cloudflare-ips-caddy.sh
-      # Last updated: $(date)
-      CF_CIDRS=$ALL_RANGES
+      cat > "$PROXIES_FILE.new" << EOF
+      # Generated $(date) by /usr/local/bin/update-cloudflare-ips-caddy.sh - do not edit.
+      # Import this INSIDE the global options \`servers { }\` block.
+      trusted_proxies static $ALL_RANGES
       EOF
 
-      chmod 0644 "$ENV_FILE"
+      cat > "$ONLY_FILE.new" << EOF
+      # Generated $(date) by /usr/local/bin/update-cloudflare-ips-caddy.sh - do not edit.
+      (cloudflare-only) {
+        @blocked not remote_ip $ALL_RANGES
+        respond @blocked "<h1>Access denied</h1><p>This server only accepts traffic through Cloudflare.</p>" 403
+      }
+      EOF
 
-      # Reload Caddy to pick up new environment
-      if systemctl reload caddy; then
-          log_message "SUCCESS: Cloudflare IPs updated ($(echo "$CLOUDFLARE_IPV4" | wc -l) IPv4 + $(echo "$CLOUDFLARE_IPV6" | wc -l) IPv6) and Caddy reloaded"
+      mv "$PROXIES_FILE.new" "$PROXIES_FILE"
+      mv "$ONLY_FILE.new" "$ONLY_FILE"
+      chmod 0644 "$PROXIES_FILE" "$ONLY_FILE"
+      log_message "Wrote $(echo "$ALL_RANGES" | wc -w) Cloudflare ranges"
+
+      # First boot runs this before any Caddyfile exists, so a reload is neither
+      # possible nor needed - the snippets are read when Caddy first starts.
+      if ! systemctl is-active --quiet caddy; then
+          log_message "Caddy is not running; snippets will be read when it starts"
+          exit 0
+      fi
+
+      if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 \
+          && systemctl reload caddy; then
+          log_message "SUCCESS: reloaded Caddy with the new ranges"
       else
-          log_message "ERROR: Failed to reload Caddy after IP update"
+          log_message "ERROR: Caddy did not reload with the new ranges"
           exit 1
       fi
     permissions: '0755'
