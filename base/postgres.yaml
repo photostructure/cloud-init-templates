@@ -1,8 +1,22 @@
 #cloud-config
-# PostgreSQL database server setup - official PostgreSQL repository method
+# PostgreSQL database server setup - Ubuntu archive method
 
-# Follows https://www.postgresql.org/download/linux/ubuntu/ and
-# https://wiki.postgresql.org/wiki/Apt
+# WHY THE UBUNTU ARCHIVE AND NOT apt.postgresql.org (pgdg):
+#
+# Ubuntu 26.04 LTS ships PostgreSQL 18 in main (`postgresql` -> 18+290ubuntu1),
+# which is the same major pgdg would install today, so pgdg buys no version.
+# What pgdg buys is a major-version upgrade path independent of the distro --
+# and that does not fit how these boxes work. A major upgrade here means
+# provisioning a new server from this cloud-init and restoring the nightly
+# pg_dump, not running pg_upgradecluster in place.
+#
+# It also costs something concrete: hardening.yaml's
+# Unattended-Upgrade::Allowed-Origins lists only the distro and ESM pockets, so
+# a pgdg-sourced PostgreSQL would silently stop receiving automatic security
+# updates until that origin were added too.
+#
+# Revisit this if a PostgreSQL major newer than the distro's is ever needed
+# before the next LTS, or if an extension is required that only pgdg packages.
 
 merge_how:
   - name: list
@@ -10,33 +24,15 @@ merge_how:
   - name: dict
     settings: [no_replace, recurse_list]
 
-# Install prerequisites for PostgreSQL installation
 packages:
-  - ca-certificates
-  - curl
-  - gnupg
-  - lsb-release
+  # `postgresql` is the metapackage; on 26.04 it pulls postgresql-18. Do not add
+  # postgresql-contrib: on 26.04 it has no candidate of its own and exists only
+  # as a virtual package that `postgresql` Provides. The contrib extensions are
+  # in postgresql-18 itself.
+  - postgresql
 
 runcmd:
-  # Create directory for PostgreSQL GPG key
-  - install -m 0755 -d /etc/apt/keyrings
+  # postgresql-common creates the `main` cluster on port 5432 at install time.
+  - systemctl enable --now postgresql
 
-  # Add PostgreSQL's official GPG key
-  - curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /etc/apt/keyrings/postgresql.asc
-  - chmod a+r /etc/apt/keyrings/postgresql.asc
-
-  # Add PostgreSQL repository to sources
-  - |
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/postgresql.asc] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/postgresql.list
-
-  # Update package index with new repository
-  - apt-get update
-
-  # Install PostgreSQL (latest stable version)
-  - apt-get install -y postgresql postgresql-contrib
-
-  # Setup PostgreSQL
-  - systemctl start postgresql
-  - systemctl enable postgresql
-
-final_message: "PostgreSQL installed from official repository"
+final_message: "PostgreSQL installed from the Ubuntu archive"
