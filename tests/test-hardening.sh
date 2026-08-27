@@ -38,7 +38,14 @@ test_ssh_config() {
   validate_ssh_setting "$HARDENING_FILE" "X11Forwarding" "no" "X11 forwarding disabled" || FAILED_TESTS=$((FAILED_TESTS + 1))
 
   # Check cryptographic settings
-  check_config "$HARDENING_FILE" "KexAlgorithms.*curve25519-sha256" "Strong key exchange algorithms configured" || FAILED_TESTS=$((FAILED_TESTS + 1))
+  # KexAlgorithms must stay unpinned so the OpenSSH default (PQ-first since 10.0)
+  # applies. A pin here is how the post-quantum hybrids got locked out.
+  if grep -qE "^\s*KexAlgorithms" "$HARDENING_FILE"; then
+    echo -e "${RED}✗${NC} KexAlgorithms is pinned; remove it so the PQ-first default applies"
+    FAILED_TESTS=$((FAILED_TESTS + 1))
+  else
+    echo -e "${GREEN}✓${NC} Key exchange left to the OpenSSH default (post-quantum hybrids)"
+  fi
   check_config "$HARDENING_FILE" "Ciphers.*chacha20-poly1305@openssh.com" "Strong ciphers configured" || FAILED_TESTS=$((FAILED_TESTS + 1))
   check_config "$HARDENING_FILE" "MACs.*hmac-sha2-256-etm@openssh.com" "Strong MACs configured" || FAILED_TESTS=$((FAILED_TESTS + 1))
 
@@ -46,7 +53,7 @@ test_ssh_config() {
 }
 
 # test_ssh_config was defined but never invoked, so none of Test 1's SSH
-# assertions ran.
+# assertions ran. That is how the stale KexAlgorithms pin went unnoticed.
 echo -e "\n${YELLOW}Test 1: SSH Configuration${NC}"
 test_ssh_config
 
