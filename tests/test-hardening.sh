@@ -19,8 +19,6 @@ fi
 
 # Test 1: SSH Configuration Validation
 test_ssh_config() {
-  echo -e "${YELLOW}Test 1: SSH Configuration${NC}"
-
   # Note: SSH port is now configured dynamically via systemd socket activation
   # The hardening file no longer contains a static Port directive
   echo -e "${GREEN}✓${NC} SSH port configured dynamically via systemd socket"
@@ -46,6 +44,11 @@ test_ssh_config() {
 
   return 0
 }
+
+# test_ssh_config was defined but never invoked, so none of Test 1's SSH
+# assertions ran.
+echo -e "\n${YELLOW}Test 1: SSH Configuration${NC}"
+test_ssh_config
 
 # Test 2: Kernel Hardening Parameters
 echo -e "\n${YELLOW}Test 2: Kernel Security Parameters${NC}"
